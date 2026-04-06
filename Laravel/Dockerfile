@@ -19,7 +19,7 @@ COPY . .
 RUN composer dump-autoload --no-dev --optimize \
     && php artisan package:discover --ansi \
     && (php artisan storage:link || true) \
-    && mkdir -p storage/framework/cache storage/framework/sessions storage/framework/views storage/logs bootstrap/cache \
+    && mkdir -p storage/app/public storage/framework/cache storage/framework/sessions storage/framework/views storage/logs bootstrap/cache \
     && chown -R www-data:www-data storage bootstrap/cache
 
 ENV APP_ENV=production \
@@ -29,6 +29,4 @@ ENV APP_ENV=production \
 
 EXPOSE 10000
 
-USER www-data
-
-CMD ["sh", "-c", "php artisan migrate --force && php artisan db:seed --force && (php artisan storage:link || true) && php artisan serve --host=0.0.0.0 --port=${PORT:-10000}"]
+CMD ["sh", "-c", "mkdir -p storage/app/public storage/framework/cache storage/framework/sessions storage/framework/views storage/logs bootstrap/cache && chmod -R 0777 storage bootstrap/cache && php artisan migrate --force && php artisan db:seed --force && (php artisan storage:link || true) && php artisan serve --host=0.0.0.0 --port=${PORT:-10000}"]
