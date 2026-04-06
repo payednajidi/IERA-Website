@@ -213,7 +213,7 @@ const submitForm = async () => {
 
 <template>
   <div class="era-page">
-    <!-- ── PAGE HEADER ── -->
+    <!-- -- PAGE HEADER -- -->
     <div class="page-hero">
       <div class="hero-left">
         <div class="hero-tag">
@@ -231,10 +231,10 @@ const submitForm = async () => {
       </div>
     </div>
 
-    <!-- ── FORM BODY ── -->
+    <!-- -- FORM BODY -- -->
     <div class="form-body">
 
-      <!-- ── SECTION 1: Assessment Info ── -->
+      <!-- -- SECTION 1: Assessment Info -- -->
       <div class="form-card" style="--delay:0.05s">
         <div class="card-header">
           <div class="card-num">01</div>
@@ -294,7 +294,7 @@ const submitForm = async () => {
         </div>
       </div>
 
-      <!-- ── SECTION 2: Processes & Tasks ── -->
+      <!-- -- SECTION 2: Processes & Tasks -- -->
       <div class="form-card" style="--delay:0.1s">
         <div class="card-header">
           <div class="card-num">02</div>
@@ -302,7 +302,7 @@ const submitForm = async () => {
             <h2>Task Description</h2>
             <p>Define all work processes and associated tasks for this assessment</p>
           </div>
-          <button class="ghost-btn" @click="addProcess">
+          <button class="add-process-btn" @click="addProcess">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
             Add Process
           </button>
@@ -407,7 +407,7 @@ const submitForm = async () => {
         </div>
       </div>
 
-      <!-- ── SECTION 3: Photos ── -->
+      <!-- -- SECTION 3: Photos -- -->
       <div class="form-card" style="--delay:0.15s">
         <div class="card-header">
           <div class="card-num">03</div>
@@ -499,7 +499,7 @@ const submitForm = async () => {
         </div>
       </div>
 
-      <!-- ── SUBMIT ── -->
+      <!-- -- SUBMIT -- -->
       <div class="submit-section" style="--delay:0.2s">
         <div class="submit-note">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
@@ -565,7 +565,7 @@ const submitForm = async () => {
   to   { opacity: 1; transform: translateY(0); }
 }
 
-/* ── PAGE HERO ── */
+/* -- PAGE HERO -- */
 .page-hero {
   display: flex;
   align-items: flex-start;
@@ -681,7 +681,7 @@ const submitForm = async () => {
 }
 .step-pip.active .pip-label { color: var(--accent); }
 
-/* ── FORM BODY ── */
+/* -- FORM BODY -- */
 .form-body {
   display: flex;
   flex-direction: column;
@@ -691,7 +691,7 @@ const submitForm = async () => {
   padding: 24px 24px 32px;
 }
 
-/* ── FORM CARD ── */
+/* -- FORM CARD -- */
 .form-card {
   background: var(--surface);
   border: 1px solid var(--border);
@@ -734,7 +734,7 @@ const submitForm = async () => {
 
 .card-body { padding: 22px; }
 
-/* ── FIELDS ── */
+/* -- FIELDS -- */
 .field-grid {
   display: grid;
   grid-template-columns: 1fr 1fr;
@@ -800,25 +800,30 @@ const submitForm = async () => {
   white-space: nowrap;
 }
 
-/* ── GHOST BUTTONS ── */
-.ghost-btn {
+/* -- ADD ACTION BUTTONS -- */
+.add-process-btn {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  padding: 7px 14px;
+  padding: 8px 16px;
   font-size: 12.5px;
-  font-weight: 600;
-  font-family: inherit;
-  border: 1.5px solid var(--navy-mid);
+  font-weight: 700;
+  font-family: 'Sora', sans-serif;
+  border: 1px solid #173b5b;
   border-radius: var(--radius-sm);
-  background: transparent;
-  color: var(--navy-mid);
+  background: linear-gradient(180deg, #1f4e77 0%, #173b5b 100%);
+  color: #fff;
   cursor: pointer;
-  transition: all 0.15s;
+  transition: all 0.18s;
   white-space: nowrap;
   flex-shrink: 0;
+  box-shadow: 0 3px 10px rgba(23, 59, 91, 0.35);
 }
-.ghost-btn:hover { background: var(--navy); color: #fff; border-color: var(--navy); }
+.add-process-btn:hover {
+  transform: translateY(-1px);
+  background: linear-gradient(180deg, #266496 0%, #1b466d 100%);
+  box-shadow: 0 5px 14px rgba(23, 59, 91, 0.45);
+}
 
 .danger-ghost-btn {
   display: inline-flex; align-items: center; gap: 5px;
@@ -832,7 +837,7 @@ const submitForm = async () => {
 }
 .danger-ghost-btn:disabled { opacity: 0.3; cursor: not-allowed; }
 
-/* ── PROCESS CARDS ── */
+/* -- PROCESS CARDS -- */
 .process-card {
   border: 1.5px solid #cfd9e6;
   border-radius: var(--radius);
@@ -871,7 +876,7 @@ const submitForm = async () => {
 }
 .process-name-input::placeholder { font-weight: 400; color: var(--text-soft); }
 
-/* ── TASKS TABLE ── */
+/* -- TASKS TABLE -- */
 .tasks-wrap { overflow-x: auto; }
 .tasks-table {
   width: 100%;
@@ -965,17 +970,24 @@ const submitForm = async () => {
 }
 .add-task-btn {
   display: inline-flex; align-items: center; gap: 6px;
-  padding: 6px 14px; font-size: 12.5px; font-weight: 600; font-family: inherit;
-  border: 1.5px dashed var(--border-strong); border-radius: var(--radius-sm);
-  background: var(--surface); color: var(--text-mid); cursor: pointer;
-  transition: all 0.15s;
+  padding: 8px 16px; font-size: 12.5px; font-weight: 700; font-family: 'Sora', sans-serif;
+  border: 1px solid #173b5b; border-radius: var(--radius-sm);
+  background: linear-gradient(180deg, #1f4e77 0%, #173b5b 100%);
+  color: #fff; cursor: pointer;
+  transition: all 0.18s;
+  box-shadow: 0 3px 10px rgba(23, 59, 91, 0.35);
 }
 .add-task-btn:hover {
-  border-color: var(--navy-mid); color: var(--navy-mid);
-  border-style: solid; background: #f0f4fa;
+  transform: translateY(-1px);
+  background: linear-gradient(180deg, #266496 0%, #1b466d 100%);
+  box-shadow: 0 5px 14px rgba(23, 59, 91, 0.45);
+}
+.add-task-btn:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 3px rgba(31, 78, 119, 0.25), 0 3px 10px rgba(23, 59, 91, 0.35);
 }
 
-/* ── PHOTOS SECTION ── */
+/* -- PHOTOS SECTION -- */
 .photos-empty {
   display: flex; align-items: center; gap: 10px;
   padding: 28px; justify-content: center;
@@ -1082,7 +1094,7 @@ const submitForm = async () => {
   background: var(--danger);
 }
 
-/* ── SUBMIT ── */
+/* -- SUBMIT -- */
 .submit-section {
   display: flex;
   align-items: center;
@@ -1133,7 +1145,7 @@ const submitForm = async () => {
 }
 @keyframes spin { to { transform: rotate(360deg); } }
 
-/* ── RESPONSIVE ── */
+/* -- RESPONSIVE -- */
 @media (max-width: 768px) {
   .page-hero { flex-direction: column; padding: 20px 16px; border-radius: 0; }
   .hero-steps { display: none; }
