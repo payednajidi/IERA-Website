@@ -1,0 +1,9 @@
+services:
+  - type: web
+    name: iera-laravel-api
+    runtime: docker
+    rootDir: Laravel
+    plan: free
+    autoDeploy: true
+    healthCheckPath: /up
+    preDeployCommand: php artisan migrate --force && php artisan db:seed --force
