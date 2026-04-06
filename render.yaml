@@ -6,4 +6,3 @@ services:
     plan: free
     autoDeploy: true
     healthCheckPath: /up
-    preDeployCommand: php artisan migrate --force && php artisan db:seed --force

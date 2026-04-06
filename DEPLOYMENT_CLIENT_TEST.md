@@ -23,8 +23,6 @@ Use `render.yaml` in repo root (Blueprint), or configure manually in Render UI:
 - Root directory: `Laravel`
 - Health check path: `/up`
 - Plan: `Free`
-- Pre-deploy command:
-  - `php artisan migrate --force && php artisan db:seed --force`
 
 Set these environment variables in Render (see `Laravel/.env.render.example`):
 - `APP_ENV=production`
@@ -44,7 +42,7 @@ Set these environment variables in Render (see `Laravel/.env.render.example`):
 - `QUEUE_CONNECTION=sync`
 
 Notes:
-- `Laravel/Dockerfile` already builds the app, installs dependencies, and creates `public/storage` symlink.
+- `Laravel/Dockerfile` already builds the app, installs dependencies, runs migrations + seeders at startup, and creates `public/storage` symlink.
 - File uploads are expected to be temporary on Render Free (ephemeral filesystem).
 
 ## 3) Deploy Vue Frontend on Netlify
