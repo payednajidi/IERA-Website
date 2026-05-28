@@ -1,7 +1,7 @@
 ﻿<script setup>
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { RouterLink, useRoute } from 'vue-router'
-import { getAssessmentProgress, getCurrentAssessmentId, setCurrentAssessmentId } from '../services/eraProgress'
+import { clearBossQuestionnaireId, getAssessmentProgress, getBossQuestionnaireId, getCurrentAssessmentId, setCurrentAssessmentId } from '../services/eraProgress'
 
 const route = useRoute()
 const assessmentId = ref('')
@@ -18,7 +18,9 @@ const progress = ref({
 
 const stepCompleted = stepNumber => Boolean(progress.value[`step${stepNumber}`])
 
+const isBossRoute = computed(() => route.path === '/boss-questionnaire')
 const isEraRoute = computed(() => route.path.startsWith('/era-'))
+const bossCompleted = ref(Boolean(getBossQuestionnaireId()))
 
 const refreshLinks = () => {
   const routeId = route.params.assessmentId ? String(route.params.assessmentId) : ''
@@ -68,6 +70,12 @@ const summaryLink = computed(() => {
 
 const handleProgressUpdated = () => {
   refreshLinks()
+  bossCompleted.value = Boolean(getBossQuestionnaireId())
+}
+
+const resetBossCompleted = () => {
+  clearBossQuestionnaireId()
+  bossCompleted.value = false
 }
 
 onMounted(() => {
@@ -96,6 +104,20 @@ watch(
     </div>
 
     <nav>
+      <RouterLink to="/boss-questionnaire" class="nav-item" :class="{ 'nav-boss-active': isBossRoute }">
+        <span>BOSS Questionnaire</span>
+        <span class="boss-status-group">
+          <span v-if="bossCompleted" class="step-check" aria-label="Completed">&#10003;</span>
+          <button
+            v-if="bossCompleted"
+            type="button"
+            class="boss-reset-btn"
+            title="Reset BOSS completion status"
+            @click.prevent="resetBossCompleted"
+          >&#x21BA;</button>
+        </span>
+      </RouterLink>
+
       <button type="button" class="nav-item nav-parent" :class="{ 'nav-parent-active': isEraRoute }" @click="isMenuOpen = !isMenuOpen">
         <span>ERA Assessment</span>
         <span class="dropdown-icon">{{ isMenuOpen ? '▾' : '▸' }}</span>
@@ -201,6 +223,12 @@ nav {
   font-weight: 600;
 }
 
+.nav-boss-active {
+  background: #3e5164;
+  border-left: 3px solid #e8a020;
+  font-weight: 600;
+}
+
 .dropdown-icon {
   font-size: 12px;
   opacity: 0.85;
@@ -246,6 +274,34 @@ nav {
   color: #fff;
   font-size: 12px;
   font-weight: 700;
+}
+
+.boss-status-group {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.boss-reset-btn {
+  background: none;
+  border: 1px solid rgba(255,255,255,0.25);
+  border-radius: 999px;
+  color: rgba(255,255,255,0.55);
+  font-size: 13px;
+  line-height: 1;
+  width: 18px;
+  height: 18px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  padding: 0;
+  transition: all 0.15s;
+}
+.boss-reset-btn:hover {
+  background: rgba(192,57,43,0.3);
+  border-color: #e07070;
+  color: #ff9999;
 }
 </style>
 

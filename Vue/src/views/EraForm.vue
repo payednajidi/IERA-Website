@@ -1,11 +1,13 @@
 <script setup>
-import { ref, computed } from 'vue'
+import { ref, computed, onMounted, watch } from 'vue'
 import api from '../services/api'
 import { useRouter } from 'vue-router'
-import { onMounted, watch } from 'vue'
-import { markStepCompleted, setCurrentAssessmentId } from '../services/eraProgress'
+import { getBossQuestionnaireId, markStepCompleted, setCurrentAssessmentId } from '../services/eraProgress'
+import { getBossEraTransfer, consumeBossToEraRedirect } from '../services/bossData'
 
 const router = useRouter()
+
+const bossIdForBanner = ref(getBossQuestionnaireId())
 
 const assessorName = ref('')
 const startDate = ref('')
@@ -122,7 +124,24 @@ const rebuildPhotoGroups = () => {
 }
 
 watch(processes, () => { rebuildPhotoGroups() }, { deep: true })
-onMounted(() => { rebuildPhotoGroups() })
+onMounted(() => {
+  rebuildPhotoGroups()
+
+  const fromBoss = consumeBossToEraRedirect()
+  if (fromBoss) {
+    const bossData = getBossEraTransfer()
+    if (bossData) {
+      assessorName.value = bossData.name || ''
+      department.value = bossData.department || ''
+      if (bossData.process) processes.value[0].name = bossData.process
+      if (bossData.jobTask && processes.value[0]?.tasks?.length > 0) {
+        processes.value[0].tasks[0].title = bossData.jobTask
+      }
+      bossAutoFilled.value = true
+      bossFilled.value = bossData
+    }
+  }
+})
 
 const photoKey = (file) => `${file.name}__${file.size}__${file.lastModified}`
 
@@ -169,6 +188,8 @@ const clearGroupPhotos = (groupIndex) => {
 }
 
 const isSubmitting = ref(false)
+const bossAutoFilled = ref(false)
+const bossFilled = ref(null)
 
 const submitForm = async () => {
   if (isSubmitting.value) return
@@ -179,6 +200,8 @@ const submitForm = async () => {
   formData.append('department', department.value)
   formData.append('working_hours', workingHours.value)
   formData.append('breaks', breaks.value)
+  const bossId = getBossQuestionnaireId()
+  if (bossId) formData.append('boss_questionnaire_id', bossId)
   processes.value.forEach((process, pIdx) => {
     formData.append(`processes[${pIdx}][name]`, process.name)
     process.tasks.forEach((task, tIdx) => {
@@ -213,6 +236,29 @@ const submitForm = async () => {
 
 <template>
   <div class="era-page">
+    <!-- BOSS warning banner -->
+    <div v-if="!bossIdForBanner" class="boss-warning-banner">
+      <span>BOSS Questionnaire not yet completed.</span>
+      <RouterLink to="/boss-questionnaire" class="boss-warning-link">Complete it first</RouterLink>
+      <span>to auto-populate body part data in Step 7.</span>
+    </div>
+
+    <!-- BOSS auto-fill banner -->
+    <div v-if="bossAutoFilled && bossFilled" class="boss-prefill-banner">
+      <div class="boss-prefill-icon">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/>
+          <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/>
+        </svg>
+      </div>
+      <span class="boss-prefill-text">
+        <strong>Transferred from BOSS Questionnaire:</strong>
+        Assessor name, department, process, and task title have been pre-filled.
+        Please review and complete the remaining fields.
+      </span>
+      <button class="boss-prefill-dismiss" @click="bossAutoFilled = false" title="Dismiss">×</button>
+    </div>
+
     <!-- -- PAGE HEADER -- -->
     <div class="page-hero">
       <div class="hero-left">
@@ -523,6 +569,37 @@ const submitForm = async () => {
 
 <style scoped>
 @import url('https://fonts.googleapis.com/css2?family=Sora:wght@400;500;600;700;800&family=Figtree:wght@400;500;600&display=swap');
+
+.boss-warning-banner {
+  display: flex; flex-wrap: wrap; gap: 4px; align-items: center;
+  padding: 10px 20px; font-size: 13px;
+  background: #fff8e1; border-bottom: 2px solid #e8a020;
+  color: #5a3a00;
+}
+.boss-warning-link {
+  color: #c07010; font-weight: 600; text-decoration: underline;
+}
+
+.boss-prefill-banner {
+  display: flex; align-items: center; gap: 10px;
+  padding: 10px 20px; font-size: 12.5px;
+  background: #e0f4f2; border-bottom: 2px solid #0e7c72;
+  color: #064e49;
+}
+.boss-prefill-icon {
+  width: 28px; height: 28px; border-radius: 6px;
+  background: #0e7c72; color: #fff;
+  display: flex; align-items: center; justify-content: center; flex-shrink: 0;
+}
+.boss-prefill-text { flex: 1; line-height: 1.5; }
+.boss-prefill-text strong { font-weight: 700; }
+.boss-prefill-dismiss {
+  background: none; border: none; color: #0e7c72;
+  font-size: 18px; line-height: 1; cursor: pointer;
+  padding: 2px 6px; border-radius: 4px; flex-shrink: 0; opacity: 0.7;
+  transition: opacity 0.15s;
+}
+.boss-prefill-dismiss:hover { opacity: 1; }
 
 .era-page {
   --navy: #0b1a2a;
