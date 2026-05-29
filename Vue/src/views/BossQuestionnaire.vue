@@ -192,9 +192,8 @@ const submitForm = async () => {
         return { severity, frequency }
       })
     })
-    // Include both raw date fields and the formatted range for the backend
-    payload.date = formattedDateRange.value
-
+    // date_start and date_end are already in the payload as ISO date strings (YYYY-MM-DD).
+    // The legacy `date` field is omitted — the backend accepts it as nullable.
     const res = await api.post('/boss-questionnaires', payload)
     setBossQuestionnaireId(res.data.id)
 
