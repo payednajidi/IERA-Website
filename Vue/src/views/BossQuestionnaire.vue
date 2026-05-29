@@ -73,12 +73,58 @@ const HOTSPOTS = [
 // ── Reactive State ────────────────────────────────────────────────────────────
 
 // ── Stage management ─────────────────────────────────────────────────────────
-// 'form' = form input stage | 'submitted' = post-submission options screen
+// 'form' = filling in | 'submitted' = post-submission options
 const stage = ref('form')
-const showSameInfoDialog = ref(false)
-const lastSubmitted = ref(null)
+const showRetainPanel = ref(false)   // shows the checkbox retention panel
+const lastSubmitted = ref(null)      // snapshot of the last submission
 
-const headerFields = ref({ name: '', staff_id: '', date: '', department: '', company: '', process: '', job_task: '' })
+// ── Retainable fields definition ─────────────────────────────────────────────
+// Each entry describes one retainable piece of worker information.
+const RETAIN_FIELDS = [
+  { key: 'name',       label: 'Name' },
+  { key: 'staff_id',   label: 'Staff ID' },
+  { key: 'company',    label: 'Company' },
+  { key: 'department', label: 'Department' },
+  { key: 'process',    label: 'Process' },
+  { key: 'job_task',   label: 'Job Task' },
+  { key: 'date',       label: 'Date Range' },   // maps to date_start + date_end
+]
+
+// Default: personal & process info pre-selected; date/job_task not
+const retainSelections = ref({
+  name: true, staff_id: true, company: true, department: true,
+  process: true, job_task: false, date: false,
+})
+
+const allRetainSelected = computed(() => Object.values(retainSelections.value).every(v => v))
+const someRetainSelected = computed(() => Object.values(retainSelections.value).some(v => v))
+
+const toggleSelectAll = (checked) => {
+  Object.keys(retainSelections.value).forEach(k => { retainSelections.value[k] = checked })
+}
+
+// ── Header fields ────────────────────────────────────────────────────────────
+const headerFields = ref({
+  name: '', staff_id: '', date_start: '', date_end: '',
+  department: '', company: '', process: '', job_task: '',
+})
+
+// Human-readable date range (e.g. "21–23 August 2026" or cross-month)
+const formattedDateRange = computed(() => {
+  const { date_start, date_end } = headerFields.value
+  if (!date_start && !date_end) return ''
+  const fmt = (iso, opts) => new Date(iso + 'T00:00:00').toLocaleDateString('en-GB', opts)
+  if (date_start && date_end) {
+    const sMonthYear = fmt(date_start, { month: 'long', year: 'numeric' })
+    const eMonthYear = fmt(date_end,   { month: 'long', year: 'numeric' })
+    if (sMonthYear === eMonthYear) {
+      return `${fmt(date_start, { day: 'numeric' })}–${fmt(date_end, { day: 'numeric' })} ${eMonthYear}`
+    }
+    return `${fmt(date_start, { day: 'numeric', month: 'long', year: 'numeric' })} – ${fmt(date_end, { day: 'numeric', month: 'long', year: 'numeric' })}`
+  }
+  if (date_start) return fmt(date_start, { day: 'numeric', month: 'long', year: 'numeric' })
+  return fmt(date_end, { day: 'numeric', month: 'long', year: 'numeric' })
+})
 
 const initRegionState = () =>
   Object.fromEntries(BODY_REGIONS.map(r => [r.key, { selected: false, due_to_work: null, responses: [] }]))
@@ -146,6 +192,9 @@ const submitForm = async () => {
         return { severity, frequency }
       })
     })
+    // Include both raw date fields and the formatted range for the backend
+    payload.date = formattedDateRange.value
+
     const res = await api.post('/boss-questionnaires', payload)
     setBossQuestionnaireId(res.data.id)
 
@@ -156,7 +205,12 @@ const submitForm = async () => {
       process:    headerFields.value.process,
       jobTask:    headerFields.value.job_task,
     })
-    lastSubmitted.value = { ...headerFields.value }
+    // Snapshot includes formatted date for display in the submitted summary
+    lastSubmitted.value = {
+      ...headerFields.value,
+      formattedDate: formattedDateRange.value,
+    }
+    showRetainPanel.value = false
     stage.value = 'submitted'
   } catch (err) {
     console.error(err.response?.data ?? err)
@@ -174,66 +228,47 @@ const goToEra = () => {
 }
 
 const startNewBossForm = () => {
-  showSameInfoDialog.value = true
+  showRetainPanel.value = true
 }
 
-const keepSameInfo = () => {
-  if (lastSubmitted.value) {
-    headerFields.value.name       = lastSubmitted.value.name
-    headerFields.value.staff_id   = lastSubmitted.value.staff_id
-    headerFields.value.company    = lastSubmitted.value.company
-    headerFields.value.department = lastSubmitted.value.department
-    headerFields.value.process    = lastSubmitted.value.process
+const cancelRetain = () => {
+  showRetainPanel.value = false
+}
+
+// Applies the checkbox selections and resets to the form stage
+const applyRetainAndStart = () => {
+  const r = retainSelections.value
+  const s = lastSubmitted.value ?? {}
+  headerFields.value = {
+    name:       r.name       ? (s.name       ?? '') : '',
+    staff_id:   r.staff_id   ? (s.staff_id   ?? '') : '',
+    company:    r.company    ? (s.company    ?? '') : '',
+    department: r.department ? (s.department ?? '') : '',
+    process:    r.process    ? (s.process    ?? '') : '',
+    job_task:   r.job_task   ? (s.job_task   ?? '') : '',
+    date_start: r.date       ? (s.date_start ?? '') : '',
+    date_end:   r.date       ? (s.date_end   ?? '') : '',
   }
-  headerFields.value.date     = ''
-  headerFields.value.job_task = ''
   regionState.value = initRegionState()
   activeRegionKey.value = null
-  showSameInfoDialog.value = false
+  showRetainPanel.value = false
   stage.value = 'form'
 }
 
 const clearAllInfo = () => {
-  headerFields.value = { name: '', staff_id: '', date: '', department: '', company: '', process: '', job_task: '' }
+  headerFields.value = {
+    name: '', staff_id: '', date_start: '', date_end: '',
+    department: '', company: '', process: '', job_task: '',
+  }
   regionState.value = initRegionState()
   activeRegionKey.value = null
-  showSameInfoDialog.value = false
+  showRetainPanel.value = false
   stage.value = 'form'
 }
 </script>
 
 <template>
   <div class="boss-page">
-
-    <!-- ─── SAME-INFO DIALOG ─── -->
-    <Transition name="fade">
-      <div v-if="showSameInfoDialog" class="dialog-overlay" @click.self="showSameInfoDialog = false">
-        <div class="dialog-box">
-          <div class="dialog-icon">
-            <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-              <circle cx="12" cy="12" r="10"/>
-              <line x1="12" y1="8" x2="12" y2="12"/>
-              <line x1="12" y1="16" x2="12.01" y2="16"/>
-            </svg>
-          </div>
-          <h3 class="dialog-title">Reuse Previous Information?</h3>
-          <p class="dialog-body">
-            Does the <strong>name, company, department, and process</strong> remain the same as the previous submission?
-            Choosing <em>Yes</em> will retain those fields — only the date and job task will be cleared for re-entry.
-          </p>
-          <div class="dialog-actions">
-            <button class="dialog-btn dialog-yes" @click="keepSameInfo">
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg>
-              Yes, Keep Information
-            </button>
-            <button class="dialog-btn dialog-no" @click="clearAllInfo">
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
-              No, Start Fresh
-            </button>
-          </div>
-        </div>
-      </div>
-    </Transition>
 
     <!-- Hero -->
     <div class="page-hero">
@@ -294,9 +329,23 @@ const clearAllInfo = () => {
             <label class="field-label">Staff ID</label>
             <input v-model="headerFields.staff_id" type="text" class="field-input" placeholder="Staff ID" />
           </div>
-          <div class="field-group">
-            <label class="field-label">Date</label>
-            <input v-model="headerFields.date" type="date" class="field-input" />
+          <div class="field-group date-range-group">
+            <label class="field-label">Date Range</label>
+            <div class="date-range-row">
+              <div class="date-half">
+                <span class="date-prefix">From</span>
+                <input v-model="headerFields.date_start" type="date" class="field-input date-in" />
+              </div>
+              <span class="date-sep">–</span>
+              <div class="date-half">
+                <span class="date-prefix">To</span>
+                <input v-model="headerFields.date_end" type="date" class="field-input date-in" />
+              </div>
+            </div>
+            <div v-if="formattedDateRange" class="date-preview">
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>
+              {{ formattedDateRange }}
+            </div>
           </div>
           <div class="field-group">
             <label class="field-label">Department</label>
@@ -550,7 +599,7 @@ const clearAllInfo = () => {
         <div class="summary-grid">
           <div class="summary-row"><span class="summary-label">Name</span><span class="summary-value">{{ lastSubmitted.name }}</span></div>
           <div class="summary-row" v-if="lastSubmitted.staff_id"><span class="summary-label">Staff ID</span><span class="summary-value">{{ lastSubmitted.staff_id }}</span></div>
-          <div class="summary-row" v-if="lastSubmitted.date"><span class="summary-label">Date</span><span class="summary-value">{{ lastSubmitted.date }}</span></div>
+          <div class="summary-row" v-if="lastSubmitted.formattedDate"><span class="summary-label">Date Range</span><span class="summary-value">{{ lastSubmitted.formattedDate }}</span></div>
           <div class="summary-row"><span class="summary-label">Department</span><span class="summary-value">{{ lastSubmitted.department }}</span></div>
           <div class="summary-row" v-if="lastSubmitted.company"><span class="summary-label">Company</span><span class="summary-value">{{ lastSubmitted.company }}</span></div>
           <div class="summary-row" v-if="lastSubmitted.process"><span class="summary-label">Process</span><span class="summary-value">{{ lastSubmitted.process }}</span></div>
@@ -587,7 +636,11 @@ const clearAllInfo = () => {
           </svg>
         </button>
 
-        <button class="action-card action-new" @click="startNewBossForm">
+        <button
+          class="action-card action-new"
+          :class="{ 'action-new--active': showRetainPanel }"
+          @click="startNewBossForm"
+        >
           <div class="action-card-icon action-new-icon">
             <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
               <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
@@ -597,14 +650,97 @@ const clearAllInfo = () => {
           </div>
           <div class="action-card-body">
             <div class="action-card-title">Create New BOSS Form</div>
-            <div class="action-card-desc">Submit another BOSS questionnaire. You will be asked if personal and process information remains the same.</div>
+            <div class="action-card-desc">
+              Submit another BOSS questionnaire. Choose which fields to carry forward from this submission.
+            </div>
           </div>
           <svg class="action-arrow" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
             <line x1="5" y1="12" x2="19" y2="12"/><polyline points="12 5 19 12 12 19"/>
           </svg>
         </button>
 
-      </div>
+      </div><!-- /action-cards -->
+
+      <!-- ─── RETENTION PANEL ─── -->
+      <Transition name="slide-down">
+        <div v-if="showRetainPanel" class="retain-panel">
+
+          <div class="retain-panel-header">
+            <div class="retain-panel-icon">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/>
+                <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/>
+              </svg>
+            </div>
+            <div>
+              <div class="retain-panel-title">Select Fields to Carry Forward</div>
+              <div class="retain-panel-sub">Checked fields will be pre-filled in the new form. Unchecked fields will be cleared.</div>
+            </div>
+          </div>
+
+          <!-- Select All row -->
+          <div class="retain-select-all-row">
+            <label class="retain-checkbox-label retain-select-all">
+              <input
+                type="checkbox"
+                class="retain-cb"
+                :checked="allRetainSelected"
+                :indeterminate="someRetainSelected && !allRetainSelected"
+                @change="toggleSelectAll($event.target.checked)"
+              />
+              <span class="cb-box" :class="{ 'cb-indeterminate': someRetainSelected && !allRetainSelected }">
+                <svg v-if="allRetainSelected" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3.5"><polyline points="20 6 9 17 4 12"/></svg>
+                <span v-else-if="someRetainSelected && !allRetainSelected" class="indeterminate-dash"></span>
+              </span>
+              <span class="retain-label-text retain-label-all">Select All</span>
+            </label>
+            <span class="retain-select-all-hint">{{ Object.values(retainSelections).filter(v => v).length }} of {{ RETAIN_FIELDS.length }} selected</span>
+          </div>
+
+          <!-- Field checkboxes -->
+          <div class="retain-fields-grid">
+            <label
+              v-for="field in RETAIN_FIELDS"
+              :key="field.key"
+              class="retain-field-row"
+              :class="{ 'retain-field-row--checked': retainSelections[field.key] }"
+            >
+              <input type="checkbox" class="retain-cb" v-model="retainSelections[field.key]" />
+              <span class="cb-box">
+                <svg v-if="retainSelections[field.key]" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3.5"><polyline points="20 6 9 17 4 12"/></svg>
+              </span>
+              <div class="retain-field-info">
+                <span class="retain-field-label">{{ field.label }}</span>
+                <span class="retain-field-value">
+                  <template v-if="field.key === 'date'">
+                    {{ lastSubmitted?.formattedDate || '—' }}
+                  </template>
+                  <template v-else>
+                    {{ lastSubmitted?.[field.key] || '—' }}
+                  </template>
+                </span>
+              </div>
+            </label>
+          </div>
+
+          <!-- Actions -->
+          <div class="retain-actions">
+            <button class="retain-btn-cancel" @click="cancelRetain">
+              ← Back to Options
+            </button>
+            <div class="retain-actions-right">
+              <button class="retain-btn-clear" @click="clearAllInfo">
+                Clear All & Start Fresh
+              </button>
+              <button class="retain-btn-confirm" @click="applyRetainAndStart" :disabled="!someRetainSelected && false">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg>
+                Apply &amp; Create New Form
+              </button>
+            </div>
+          </div>
+
+        </div>
+      </Transition>
 
     </div><!-- /submitted stage -->
 
@@ -742,6 +878,7 @@ const clearAllInfo = () => {
 
 /* ── Header grid ──────────────────────────────────────────────────────────── */
 .header-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; }
+.date-range-group { grid-column: 1 / -1; }
 .field-group { display: flex; flex-direction: column; gap: 5px; }
 .field-label { font-size: 12px; font-weight: 600; color: var(--text-mid); }
 .req { color: var(--danger); }
@@ -1036,6 +1173,12 @@ const clearAllInfo = () => {
 @media (max-width: 600px) {
   .header-grid { grid-template-columns: 1fr; }
   .instructions-bar { flex-direction: column; align-items: flex-start; gap: 6px; }
+  .date-range-row { flex-direction: column; gap: 8px; }
+  .date-half { width: 100%; }
+  .date-sep { display: none; }
+  .retain-fields-grid { grid-template-columns: 1fr; }
+  .retain-actions { flex-direction: column; align-items: flex-start; }
+  .retain-actions-right { width: 100%; justify-content: flex-end; }
 }
 
 /* ── Info Banner ──────────────────────────────────────────────────────────── */
@@ -1055,6 +1198,34 @@ const clearAllInfo = () => {
 /* ── Field extras ─────────────────────────────────────────────────────────── */
 .field-hint { font-size: 11px; font-weight: 400; color: var(--text-soft); }
 .field-full { grid-column: 1 / -1; }
+
+/* ── Date range picker ────────────────────────────────────────────────────── */
+.date-range-group { grid-column: 1 / -1; }
+.date-range-row {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+}
+.date-half {
+  display: flex; align-items: center; gap: 7px; flex: 1; min-width: 140px;
+}
+.date-prefix {
+  font-size: 11.5px; font-weight: 600; color: var(--text-soft); white-space: nowrap; flex-shrink: 0;
+}
+.date-in { flex: 1; }
+.date-sep {
+  font-size: 18px; color: var(--border-strong); flex-shrink: 0; font-weight: 300;
+  align-self: center;
+}
+.date-preview {
+  margin-top: 6px;
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 5px 12px;
+  background: var(--accent-light);
+  border: 1px solid rgba(232,160,32,0.35);
+  border-radius: 20px;
+  font-size: 12px; font-weight: 600; color: #7e4b00;
+  width: fit-content;
+}
+
 .sync-tag {
   display: inline-flex;
   align-items: center;
@@ -1150,45 +1321,133 @@ const clearAllInfo = () => {
 .action-arrow { color: var(--text-soft); flex-shrink: 0; }
 .action-era:hover { border-color: #1f4e77; }
 .action-era:hover .action-arrow { color: #1f4e77; }
-.action-new:hover { border-color: #1a6e44; }
+.action-new:hover  { border-color: #1a6e44; }
 .action-new:hover .action-arrow { color: #1a6e44; }
+.action-new--active { border-color: #1a6e44 !important; background: #f0fdf4; }
 
-/* ── Dialog ───────────────────────────────────────────────────────────────── */
-.dialog-overlay {
-  position: fixed; inset: 0;
-  background: rgba(10,20,35,0.55);
+/* ── Retention panel ──────────────────────────────────────────────────────── */
+.retain-panel {
+  background: var(--surface);
+  border: 1.5px solid #1a6e44;
+  border-radius: var(--radius);
+  box-shadow: 0 4px 20px rgba(26,110,68,0.15);
+  overflow: hidden;
+}
+
+.retain-panel-header {
+  display: flex; align-items: flex-start; gap: 12px;
+  padding: 16px 20px;
+  background: linear-gradient(135deg, #0e2d1a 0%, #1a5c35 100%);
+}
+.retain-panel-icon {
+  width: 34px; height: 34px; border-radius: 8px;
+  background: rgba(255,255,255,0.15); color: #fff;
+  display: flex; align-items: center; justify-content: center; flex-shrink: 0;
+}
+.retain-panel-title {
+  font-family: 'Sora', sans-serif; font-size: 14px; font-weight: 700;
+  color: #f0fff5; margin-bottom: 3px;
+}
+.retain-panel-sub { font-size: 12px; color: rgba(230,255,240,0.8); line-height: 1.5; }
+
+/* Select-all row */
+.retain-select-all-row {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 12px 20px; background: #f6fef9;
+  border-bottom: 1px solid #d1fae5;
+}
+.retain-select-all-hint { font-size: 11.5px; color: #1a6e44; font-weight: 600; }
+
+/* Field grid */
+.retain-fields-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  gap: 1px;
+  background: var(--border);
+  border-top: 1px solid var(--border);
+}
+.retain-field-row {
+  display: flex; align-items: flex-start; gap: 10px;
+  padding: 12px 20px;
+  background: var(--surface);
+  cursor: pointer;
+  transition: background 0.12s;
+}
+.retain-field-row:hover { background: #f6fef9; }
+.retain-field-row--checked { background: #f0fdf4; }
+
+/* Custom checkboxes */
+.retain-cb { display: none; }
+.cb-box {
+  width: 18px; height: 18px; border-radius: 4px; flex-shrink: 0;
+  border: 2px solid var(--border-strong); background: var(--surface);
   display: flex; align-items: center; justify-content: center;
-  z-index: 999; padding: 20px;
+  transition: all 0.15s; margin-top: 1px;
 }
-.dialog-box {
-  background: var(--surface); border-radius: 14px;
-  padding: 30px 26px 22px; max-width: 420px; width: 100%;
-  box-shadow: 0 20px 60px rgba(10,20,35,0.35);
-  display: flex; flex-direction: column; align-items: center;
-  text-align: center; gap: 10px;
+.retain-field-row--checked .cb-box,
+.retain-select-all .cb-box {
+  background: #1a6e44; border-color: #1a6e44; color: #fff;
 }
-.dialog-icon {
-  width: 48px; height: 48px; border-radius: 50%;
-  background: #fffbea; border: 2px solid #f0c040;
-  color: #b07c00; display: flex; align-items: center; justify-content: center;
+.retain-select-all .cb-box { width: 18px; height: 18px; border-radius: 4px; flex-shrink: 0; border: 2px solid var(--border-strong); background: var(--surface); display: flex; align-items: center; justify-content: center; transition: all 0.15s; }
+input[type="checkbox"]:checked ~ .cb-box { background: #1a6e44; border-color: #1a6e44; color: #fff; }
+.cb-indeterminate { background: #1a6e44 !important; border-color: #1a6e44 !important; }
+.indeterminate-dash {
+  width: 8px; height: 2px; background: #fff; border-radius: 1px; display: block;
 }
-.dialog-title { font-family: 'Sora', sans-serif; font-size: 16px; font-weight: 700; color: var(--navy); }
-.dialog-body { font-size: 13px; color: var(--text-mid); line-height: 1.65; max-width: 340px; }
-.dialog-body strong { color: var(--navy); }
-.dialog-body em { font-style: italic; }
-.dialog-actions { display: flex; gap: 8px; margin-top: 6px; flex-wrap: wrap; justify-content: center; }
-.dialog-btn {
-  display: inline-flex; align-items: center; gap: 6px;
-  padding: 10px 20px; font-size: 12.5px; font-weight: 700;
-  font-family: 'Sora', sans-serif; border-radius: var(--radius-sm);
-  cursor: pointer; transition: all 0.18s; border: 1.5px solid transparent; white-space: nowrap;
-}
-.dialog-yes { background: linear-gradient(180deg, #1e6e3a 0%, #154f29 100%); color: #fff; border-color: #154f29; box-shadow: 0 3px 8px rgba(21,79,41,0.3); }
-.dialog-yes:hover { transform: translateY(-1px); box-shadow: 0 4px 12px rgba(21,79,41,0.4); }
-.dialog-no  { background: transparent; color: var(--danger); border-color: var(--danger); }
-.dialog-no:hover { background: #fff5f4; transform: translateY(-1px); }
 
-/* ── Fade transition ──────────────────────────────────────────────────────── */
-.fade-enter-active, .fade-leave-active { transition: opacity 0.2s ease; }
-.fade-enter-from, .fade-leave-to { opacity: 0; }
+.retain-checkbox-label {
+  display: flex; align-items: center; gap: 10px; cursor: pointer;
+}
+.retain-label-text { font-size: 13px; color: var(--text-mid); }
+.retain-label-all  { font-size: 13px; font-weight: 700; color: var(--navy); }
+
+.retain-field-info { display: flex; flex-direction: column; gap: 2px; flex: 1; min-width: 0; }
+.retain-field-label {
+  font-size: 11px; font-weight: 700; text-transform: uppercase;
+  letter-spacing: 0.06em; color: var(--text-soft);
+}
+.retain-field-value {
+  font-size: 13px; font-weight: 500; color: var(--navy);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+
+/* Retain actions bar */
+.retain-actions {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 12px; flex-wrap: wrap;
+  padding: 14px 20px;
+  background: #f6fef9;
+  border-top: 1px solid #d1fae5;
+}
+.retain-actions-right { display: flex; gap: 8px; flex-wrap: wrap; }
+.retain-btn-cancel {
+  background: none; border: none; cursor: pointer;
+  font-size: 12.5px; font-weight: 600; color: var(--text-soft);
+  padding: 8px 0; display: flex; align-items: center; gap: 5px;
+  transition: color 0.15s;
+}
+.retain-btn-cancel:hover { color: var(--navy); }
+.retain-btn-clear {
+  padding: 9px 16px; font-size: 12.5px; font-weight: 600; font-family: inherit;
+  border: 1.5px solid var(--danger); border-radius: var(--radius-sm);
+  background: transparent; color: var(--danger); cursor: pointer; transition: all 0.15s;
+}
+.retain-btn-clear:hover { background: #fff5f4; }
+.retain-btn-confirm {
+  display: inline-flex; align-items: center; gap: 7px;
+  padding: 10px 20px; font-size: 13px; font-weight: 700;
+  font-family: 'Sora', sans-serif;
+  background: linear-gradient(180deg, #1e6e3a 0%, #154f29 100%);
+  color: #fff; border: none; border-radius: var(--radius-sm);
+  cursor: pointer; transition: all 0.18s;
+  box-shadow: 0 3px 8px rgba(21,79,41,0.3);
+}
+.retain-btn-confirm:hover { transform: translateY(-1px); box-shadow: 0 4px 12px rgba(21,79,41,0.4); }
+
+/* ── Slide-down transition ────────────────────────────────────────────────── */
+.slide-down-enter-active { transition: all 0.28s ease; }
+.slide-down-leave-active { transition: all 0.2s ease; }
+.slide-down-enter-from, .slide-down-leave-to {
+  opacity: 0; transform: translateY(-10px);
+}
 </style>
