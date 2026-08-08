@@ -15,6 +15,11 @@ const viewMode = ref('grid') // grid | list
 const searchQuery = ref('')
 const detailOpen = ref(false)
 
+const selectionMode = ref(false)
+const selectedIds = ref([])
+const bulkDeleting = ref(false)
+const bulkActionError = ref('')
+
 const selectedMeta = computed(() => files.value.find(item => Number(item.id) === Number(selectedId.value)))
 
 const filteredFiles = computed(() => {
@@ -51,6 +56,56 @@ const closeDetail = () => {
   selectedId.value = null
   detailOpen.value = false
   syncListRouteQuery()
+}
+
+const isChecked = id => selectedIds.value.includes(Number(id))
+
+const toggleChecked = id => {
+  const numId = Number(id)
+  const idx = selectedIds.value.indexOf(numId)
+  if (idx === -1) selectedIds.value.push(numId)
+  else selectedIds.value.splice(idx, 1)
+}
+
+const toggleSelectionMode = () => {
+  selectionMode.value = !selectionMode.value
+  selectedIds.value = []
+  bulkActionError.value = ''
+  if (selectionMode.value) closeDetail()
+}
+
+const handleCardClick = id => {
+  if (selectionMode.value) {
+    toggleChecked(id)
+    return
+  }
+  selectFile(id)
+}
+
+const confirmBulkDelete = async () => {
+  if (bulkDeleting.value || selectedIds.value.length === 0) return
+
+  const count = selectedIds.value.length
+  const confirmed = window.confirm(`Delete ${count} assessment${count !== 1 ? 's' : ''}? This cannot be undone.`)
+  if (!confirmed) return
+
+  bulkDeleting.value = true
+  bulkActionError.value = ''
+
+  try {
+    const response = await api.post('/era-assessments/bulk-delete', { ids: selectedIds.value })
+    if (response.data?.not_found?.length) {
+      bulkActionError.value = `${response.data.not_found.length} item(s) were already removed.`
+    }
+    selectedIds.value = []
+    selectionMode.value = false
+    await loadFiles()
+  } catch (error) {
+    console.error(error)
+    bulkActionError.value = 'Unable to delete selected files. Please try again.'
+  } finally {
+    bulkDeleting.value = false
+  }
 }
 
 const openTotalInformation = () => {
@@ -199,12 +254,26 @@ watch(
             </svg>
           </button>
         </div>
+        <button type="button" class="pa-btn" :class="{ 'pa-active': selectionMode }" @click="toggleSelectionMode">
+          {{ selectionMode ? 'Cancel' : 'Select' }}
+        </button>
+        <button
+          v-if="selectionMode && selectedIds.length > 0"
+          type="button"
+          class="pa-btn pa-danger"
+          :disabled="bulkDeleting"
+          @click="confirmBulkDelete"
+        >
+          Delete ({{ selectedIds.length }})
+        </button>
         <div class="file-count">{{ filteredFiles.length }} item{{ filteredFiles.length !== 1 ? 's' : '' }}</div>
       </div>
     </div>
 
     <div class="explorer-body">
       <div class="file-area">
+        <div v-if="bulkActionError" class="error-state">{{ bulkActionError }}</div>
+
         <div v-if="loadingFiles" class="empty-state">
           <div class="spinner"></div>
           <span>Loading files...</span>
@@ -232,9 +301,12 @@ watch(
             :key="file.id"
             type="button"
             class="file-icon-card"
-            :class="{ selected: Number(file.id) === Number(selectedId) }"
-            @click="selectFile(file.id)"
+            :class="{ selected: selectionMode ? isChecked(file.id) : Number(file.id) === Number(selectedId) }"
+            @click="handleCardClick(file.id)"
           >
+            <span v-if="selectionMode" class="select-check" :class="{ checked: isChecked(file.id) }" aria-hidden="true">
+              <svg v-if="isChecked(file.id)" width="10" height="10" viewBox="0 0 10 10"><path d="M1 5l2.5 2.5L9 2" stroke="#fff" stroke-width="1.6" fill="none"/></svg>
+            </span>
             <div class="file-icon" :style="{ background: fileColor(file.id) }">
               <svg class="doc-bg" width="48" height="60" viewBox="0 0 48 60" fill="none">
                 <rect width="48" height="60" rx="4" fill="rgba(255,255,255,0.12)" />
@@ -265,9 +337,12 @@ watch(
             :key="file.id"
             type="button"
             class="list-row"
-            :class="{ selected: Number(file.id) === Number(selectedId) }"
-            @click="selectFile(file.id)"
+            :class="{ selected: selectionMode ? isChecked(file.id) : Number(file.id) === Number(selectedId), 'row-selecting': selectionMode }"
+            @click="handleCardClick(file.id)"
           >
+            <span v-if="selectionMode" class="select-check select-check-inline" :class="{ checked: isChecked(file.id) }" aria-hidden="true">
+              <svg v-if="isChecked(file.id)" width="10" height="10" viewBox="0 0 10 10"><path d="M1 5l2.5 2.5L9 2" stroke="#fff" stroke-width="1.6" fill="none"/></svg>
+            </span>
             <span class="lr-icon" :style="{ background: fileColor(file.id) }">{{ getInitials(file.assessor_name) }}</span>
             <span class="lr-name">{{ file.assessor_name || 'Unknown' }}</span>
             <span class="lr-date">{{ file.assessment_date }}</span>
@@ -496,6 +571,7 @@ watch(
 }
 
 .file-icon-card {
+  position: relative;
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -621,6 +697,28 @@ watch(
 
 .list-row:hover { background: #f0f6ff; border-color: #c5d9f5; }
 .list-row.selected { background: #e8f0fd; border-color: #3b7dd8; }
+.list-row.row-selecting { grid-template-columns: 20px auto 1fr 160px 200px 60px; }
+
+.select-check {
+  position: absolute;
+  top: 6px;
+  left: 6px;
+  width: 18px;
+  height: 18px;
+  border: 2px solid #c3cad6;
+  border-radius: 4px;
+  background: #fff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 2;
+}
+.select-check.checked { background: #3b7dd8; border-color: #3b7dd8; }
+.select-check-inline {
+  position: static;
+  width: 16px;
+  height: 16px;
+}
 
 .lr-icon {
   width: 28px;
@@ -737,6 +835,8 @@ watch(
 .pa-btn:hover { background: #f4f6f8; }
 .pa-btn.pa-active { background: #2f3e4d; border-color: #2f3e4d; color: #fff; }
 .pa-btn.pa-open { margin-left: auto; background: #2a7a52; border-color: #2a7a52; color: #fff; }
+.pa-btn.pa-danger { background: #c0392b; border-color: #c0392b; color: #fff; }
+.pa-btn.pa-danger:hover:not(:disabled) { background: #a93226; border-color: #a93226; }
 .pa-btn:disabled { opacity: 0.6; cursor: not-allowed; }
 
 .panel-content {

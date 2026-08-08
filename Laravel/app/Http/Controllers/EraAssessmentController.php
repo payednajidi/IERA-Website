@@ -3,6 +3,8 @@
 namespace App\Http\Controllers;
 
 use App\Models\EraAssessment;
+use App\Models\EraPhoto;
+use App\Models\EraPhotoGroup;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Storage;
@@ -278,6 +280,46 @@ class EraAssessmentController extends Controller
                 'error' => $e->getMessage(),
             ], 500);
         }
+    }
+
+    public function destroyMany(Request $request)
+    {
+        $validated = $request->validate([
+            'ids' => 'required|array|min:1',
+            'ids.*' => 'integer',
+        ]);
+
+        $requestedIds = collect($validated['ids'])->map(fn ($id) => (int) $id)->unique()->values();
+
+        $foundIds = EraAssessment::whereIn('id', $requestedIds)
+            ->pluck('id')
+            ->map(fn ($id) => (int) $id)
+            ->values();
+
+        $notFoundIds = $requestedIds->diff($foundIds)->values();
+
+        if ($foundIds->isNotEmpty()) {
+            $photoGroupIds = EraPhotoGroup::whereIn('assessment_id', $foundIds)->pluck('id');
+
+            $filePaths = EraPhoto::whereIn('photo_group_id', $photoGroupIds)
+                ->pluck('file_path')
+                ->filter()
+                ->values()
+                ->all();
+
+            DB::transaction(function () use ($foundIds) {
+                EraAssessment::whereIn('id', $foundIds)->delete();
+            });
+
+            foreach ($filePaths as $path) {
+                Storage::disk('public')->delete($path);
+            }
+        }
+
+        return response()->json([
+            'deleted' => $foundIds->values()->all(),
+            'not_found' => $notFoundIds->values()->all(),
+        ]);
     }
 
     private function serializeAssessment(EraAssessment $assessment): array

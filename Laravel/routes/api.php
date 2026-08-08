@@ -14,6 +14,7 @@ Route::get('/era-assessments', [EraAssessmentController::class, 'index']);
 Route::get('/era-assessments/{assessmentId}', [EraAssessmentController::class, 'show']);
 Route::put('/era-assessments/{assessmentId}', [EraAssessmentController::class, 'update']);
 Route::post('/era-assessments', [EraAssessmentController::class, 'store']);
+Route::post('/era-assessments/bulk-delete', [EraAssessmentController::class, 'destroyMany']);
 Route::get('/era-checklist/{assessmentId}', [EraChecklistController::class, 'show']);
 Route::post('/era-checklist', [EraChecklistController::class, 'store']);
 Route::get('/era-forceful-exertion/{assessmentId}', [EraForcefulExertionController::class, 'show']);
