@@ -1,5 +1,6 @@
 const STORAGE_KEY = 'era_step_progress'
 const CURRENT_ASSESSMENT_KEY = 'era_assessment_id'
+const BOSS_QUESTIONNAIRE_ID_KEY = 'era_boss_questionnaire_id'
 
 const STEP_KEYS = ['step1', 'step2', 'step3', 'step4', 'step5', 'step6', 'step7']
 
@@ -58,6 +59,17 @@ export const setCurrentAssessmentId = assessmentId => {
 
 export const clearCurrentAssessmentId = () => {
   localStorage.removeItem(CURRENT_ASSESSMENT_KEY)
+}
+
+export const getBossQuestionnaireId = () => localStorage.getItem(BOSS_QUESTIONNAIRE_ID_KEY) ?? ''
+
+export const setBossQuestionnaireId = bossId => {
+  if (!bossId) return
+  localStorage.setItem(BOSS_QUESTIONNAIRE_ID_KEY, String(bossId))
+}
+
+export const clearBossQuestionnaireId = () => {
+  localStorage.removeItem(BOSS_QUESTIONNAIRE_ID_KEY)
 }
 
 export const getAssessmentProgress = assessmentId => {
