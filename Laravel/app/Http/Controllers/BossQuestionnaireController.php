@@ -62,18 +62,36 @@ class BossQuestionnaireController extends Controller
         $assessment = EraAssessment::find($assessmentId);
 
         if (!$assessment || !$assessment->boss_questionnaire_id) {
-            return response()->json(['boss_id' => null, 'selected_body_parts' => []]);
+            return response()->json(['linked' => false]);
         }
 
         $boss = BossQuestionnaire::find($assessment->boss_questionnaire_id);
 
         if (!$boss) {
-            return response()->json(['boss_id' => null, 'selected_body_parts' => []]);
+            return response()->json(['linked' => false]);
+        }
+
+        $regions = [];
+        foreach (self::REGIONS as $region) {
+            $regions[$region] = [
+                'selected'    => (bool) $boss->{"{$region}_selected"},
+                'due_to_work' => $boss->{"{$region}_due_to_work"},
+                'responses'   => $boss->{"{$region}_responses"} ?? [],
+            ];
         }
 
         return response()->json([
-            'boss_id'             => $boss->id,
-            'selected_body_parts' => $boss->getSelectedBodyParts(),
+            'linked'     => true,
+            'boss_id'    => $boss->id,
+            'name'       => $boss->name,
+            'staff_id'   => $boss->staff_id,
+            'date_start' => optional($boss->date_start)->toDateString(),
+            'date_end'   => optional($boss->date_end)->toDateString(),
+            'department' => $boss->department,
+            'company'    => $boss->company,
+            'process'    => $boss->process,
+            'job_task'   => $boss->job_task,
+            'regions'    => $regions,
         ]);
     }
 }

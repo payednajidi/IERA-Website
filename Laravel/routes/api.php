@@ -1,6 +1,7 @@
 <?php
 
 use Illuminate\Support\Facades\Route;
+use App\Http\Controllers\BossQuestionnaireController;
 use App\Http\Controllers\EraAssessmentController;
 use App\Http\Controllers\EraChecklistController;
 use App\Http\Controllers\EraEnvironmentalFactorController;
@@ -25,3 +26,6 @@ Route::get('/era-environmental-factors/{assessmentId}', [EraEnvironmentalFactorC
 Route::post('/era-environmental-factors', [EraEnvironmentalFactorController::class, 'store']);
 Route::get('/era-summary-pain-parts/{assessmentId}', [EraSummaryController::class, 'showPainParts']);
 Route::post('/era-summary-pain-parts', [EraSummaryController::class, 'savePainParts']);
+Route::get('/boss-questionnaires/{id}', [BossQuestionnaireController::class, 'show']);
+Route::post('/boss-questionnaires', [BossQuestionnaireController::class, 'store']);
+Route::get('/boss-questionnaires/by-assessment/{assessmentId}', [BossQuestionnaireController::class, 'showByAssessment']);

@@ -150,8 +150,33 @@ const step4 = ref({ rows: [], task_not_applicable: {} })
 const step5 = ref({ rows: [], task_not_applicable: {} })
 const step6 = ref({ rows: [], task_not_applicable: {} })
 const step7 = ref({ pain_parts: {} })
+const bossData = ref({ linked: false })
 
 const BODY_PART_OPTIONS = ['Neck', 'Shoulder', 'Upper back', 'Lower back', 'Upper arm', 'Elbow', 'Lower Arm', 'Hand/Wrist', 'Thigh', 'Knee', 'Lower leg', 'Ankle/Foot']
+
+const BOSS_REGION_LABELS = { neck: 'Neck', shoulder: 'Shoulder', upper_back: 'Upper Back', lower_back: 'Lower Back', upper_arm: 'Upper Arm', elbow: 'Elbow', lower_arm: 'Lower Arm', hand_wrist: 'Hand / Wrist', thigh: 'Thigh', knee: 'Knee', lower_leg: 'Lower Leg', ankle_foot: 'Ankle / Foot' }
+const BOSS_SEVERITY_LABELS = { no_very_mild: 'No / Very Mild Discomfort', discomfort: 'Discomfort', pain_able: 'Pain (able to continue work)', pain_unable: 'Pain (unable to continue work)' }
+const BOSS_FREQUENCY_LABELS = { once_a_year: 'Once a year', few_times_a_year: 'A few times a year', once_a_month: 'Once a month', few_times_a_month: 'A few times a month', once_a_week: 'Once a week', few_times_a_week: 'A few times a week', everyday: 'Everyday' }
+
+const bossSelectedRegions = computed(() => {
+  const regions = bossData.value?.regions || {}
+  return Object.entries(regions)
+    .filter(([, r]) => r.selected)
+    .map(([key, r]) => ({
+      key,
+      label: BOSS_REGION_LABELS[key] || key,
+      dueToWork: r.due_to_work,
+      responseText: (r.responses || [])
+        .map(resp => `${BOSS_SEVERITY_LABELS[resp.severity] || resp.severity} — ${BOSS_FREQUENCY_LABELS[resp.frequency] || resp.frequency}`)
+        .join('; ') || '—',
+    }))
+})
+
+const bossDateRangeText = computed(() => {
+  const { date_start, date_end } = bossData.value || {}
+  if (date_start && date_end) return date_start === date_end ? date_start : `${date_start} – ${date_end}`
+  return date_start || date_end || ''
+})
 
 const step1ProcessRows = computed(() => {
   const rows = []
@@ -474,7 +499,7 @@ const loadDetails = async id => {
   loadingDetails.value = true
   detailError.value = ''
   try {
-    const [assessmentData, checklistData, forcefulData, repetitiveData, vibrationData, environmentalData, summaryPainData] = await Promise.all([
+    const [assessmentData, checklistData, forcefulData, repetitiveData, vibrationData, environmentalData, summaryPainData, bossQuestionnaireData] = await Promise.all([
       api.get(`/era-assessments/${id}`).then(r => r.data),
       safeGet(`/era-checklist/${id}`),
       safeGet(`/era-forceful-exertion/${id}`),
@@ -482,6 +507,7 @@ const loadDetails = async id => {
       safeGet(`/era-vibration/${id}`),
       safeGet(`/era-environmental-factors/${id}`),
       safeGet(`/era-summary-pain-parts/${id}`),
+      safeGet(`/boss-questionnaires/by-assessment/${id}`),
     ])
     revokePhotoPreviewUrls(step1.value.photo_groups)
     step1.value = {
@@ -499,6 +525,7 @@ const loadDetails = async id => {
     step5.value = normalizeSimple(vibrationData)
     step6.value = normalizeSimple(environmentalData)
     step7.value = { pain_parts: normalizePainMap(taskList, summaryPainData?.pain_parts || {}) }
+    bossData.value = bossQuestionnaireData?.linked ? bossQuestionnaireData : { linked: false }
   } catch (error) {
     console.error(error)
     detailError.value = 'Unable to load selected file.'
@@ -964,6 +991,59 @@ onUnmounted(() => {
                   </div>
                 </div>
               </div>
+            </div>
+
+            <!-- BOSS Questionnaire -->
+            <div class="step-section">
+              <div class="step-label">BOSS QUESTIONNAIRE</div>
+
+              <template v-if="bossData.linked">
+                <div class="table-wrap">
+                  <table class="table">
+                    <tbody>
+                      <tr>
+                        <th>Name</th><td>{{ bossData.name || '-' }}</td>
+                        <th>Staff ID</th><td>{{ bossData.staff_id || '-' }}</td>
+                      </tr>
+                      <tr>
+                        <th>Date Range</th><td>{{ bossDateRangeText || '-' }}</td>
+                        <th>Department</th><td>{{ bossData.department || '-' }}</td>
+                      </tr>
+                      <tr>
+                        <th>Company</th><td>{{ bossData.company || '-' }}</td>
+                        <th>Process</th><td>{{ bossData.process || '-' }}</td>
+                      </tr>
+                      <tr>
+                        <th>Job Task</th><td colspan="3">{{ bossData.job_task || '-' }}</td>
+                      </tr>
+                    </tbody>
+                  </table>
+                </div>
+
+                <div class="table-wrap">
+                  <table class="table">
+                    <thead>
+                      <tr>
+                        <th>Body Region</th>
+                        <th class="tc">Due to Work</th>
+                        <th>Severity / Frequency</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      <tr v-for="region in bossSelectedRegions" :key="region.key">
+                        <td>{{ region.label }}</td>
+                        <td class="tc">{{ region.dueToWork === true ? 'Yes' : region.dueToWork === false ? 'No' : '-' }}</td>
+                        <td>{{ region.responseText }}</td>
+                      </tr>
+                      <tr v-if="bossSelectedRegions.length === 0">
+                        <td colspan="3" class="tc">No affected body regions recorded.</td>
+                      </tr>
+                    </tbody>
+                  </table>
+                </div>
+              </template>
+
+              <div v-else class="boss-empty-note">No BOSS Questionnaire linked to this assessment.</div>
             </div>
 
             <!-- Step 2 -->
@@ -1475,6 +1555,7 @@ onUnmounted(() => {
   font-size: 13px;
 }
 .error-state { color: #c0392b; }
+.boss-empty-note { color: #9aa3ae; font-size: 13px; padding: 4px 2px; }
 
 .spinner {
   width: 28px;
