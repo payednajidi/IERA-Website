@@ -1,6 +1,7 @@
 import { createRouter, createWebHistory } from 'vue-router'
 
 import DashboardLayout from '../layouts/DashboardLayout.vue'
+import BossQuestionnaire from '../views/BossQuestionnaire.vue'
 import EraForm from '../views/EraForm.vue'
 import EraChecklist from '../views/EraChecklist.vue'
 import EraForcefulExertion from '../views/EraForcefulExertion.vue'
@@ -17,6 +18,11 @@ const routes = [
 path:'/',
 component:DashboardLayout,
 children:[
+
+{
+path:'boss-questionnaire',
+component:BossQuestionnaire
+},
 
 {
 path:'era-form',
