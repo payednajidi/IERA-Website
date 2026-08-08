@@ -3,358 +3,403 @@ import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import api from '../services/api'
 
-const route = useRoute()
+const route  = useRoute()
 const router = useRouter()
 
-const files = ref([])
-const selectedId = ref(null)
+const files        = ref([])
+const selectedId   = ref(null)
 const loadingFiles = ref(false)
-const listError = ref('')
-const mode = ref('preview')
-const viewMode = ref('grid') // grid | list
-const searchQuery = ref('')
-const detailOpen = ref(false)
+const listError    = ref('')
+const mode         = ref('preview')
+const viewMode     = ref('grid')
+const searchQuery  = ref('')
+const detailOpen   = ref(false)
 
-const selectedMeta = computed(() => files.value.find(item => Number(item.id) === Number(selectedId.value)))
+// ── Computed ──────────────────────────────────────────────────────────────────
+const selectedMeta = computed(() =>
+  files.value.find(item => Number(item.id) === Number(selectedId.value))
+)
 
 const filteredFiles = computed(() => {
   if (!searchQuery.value.trim()) return files.value
   const q = searchQuery.value.toLowerCase()
-  return files.value.filter(file =>
-    file.assessor_name?.toLowerCase().includes(q) ||
-    file.department?.toLowerCase().includes(q) ||
-    file.assessment_date?.toLowerCase().includes(q)
+  return files.value.filter(f =>
+    f.assessor_name?.toLowerCase().includes(q) ||
+    f.department?.toLowerCase().includes(q) ||
+    f.assessment_date?.toLowerCase().includes(q) ||
+    (f.process_names || []).some(p => p.toLowerCase().includes(q))
   )
 })
 
-const normalizeMode = value => (String(value).toLowerCase() === 'edit' ? 'edit' : 'preview')
+const uniqueDepartmentCount = computed(() =>
+  new Set(files.value.map(f => f.department).filter(Boolean)).size
+)
 
-const setMode = next => {
-  mode.value = normalizeMode(next)
-  syncListRouteQuery()
+const totalProcessCount = computed(() =>
+  files.value.reduce((sum, f) => sum + (f.processes_count || 0), 0)
+)
+
+const latestAssessmentDate = computed(() => {
+  if (!files.value.length) return '—'
+  return [...files.value]
+    .sort((a, b) => new Date(b.created_at) - new Date(a.created_at))[0]?.assessment_date || '—'
+})
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
+const normalizeMode = v => (String(v).toLowerCase() === 'edit' ? 'edit' : 'preview')
+
+const getInitials = name => {
+  if (!name) return 'ER'
+  return name.split(' ').slice(0, 2).map(w => w[0]).join('').toUpperCase()
 }
 
+const CARD_COLORS = ['#3b7dd8','#2a7a52','#8b5cf6','#d97706','#dc2626','#0891b2','#7c3aed','#059669']
+const fileColor = id => CARD_COLORS[Number(id) % CARD_COLORS.length]
+
+const DEPT_PALETTES = [
+  { bg:'#eff6ff', color:'#1d4ed8', border:'#bfdbfe' },
+  { bg:'#f0fdf4', color:'#15803d', border:'#bbf7d0' },
+  { bg:'#faf5ff', color:'#7e22ce', border:'#e9d5ff' },
+  { bg:'#fff7ed', color:'#c2410c', border:'#fed7aa' },
+  { bg:'#fef2f2', color:'#b91c1c', border:'#fecaca' },
+  { bg:'#f0f9ff', color:'#0369a1', border:'#bae6fd' },
+]
+
+const deptPaletteMap = computed(() => {
+  const map = {}
+  ;[...new Set(files.value.map(f => f.department).filter(Boolean))].forEach((d, i) => {
+    map[d] = DEPT_PALETTES[i % DEPT_PALETTES.length]
+  })
+  return map
+})
+
+const deptPalette = dept => deptPaletteMap.value[dept] || DEPT_PALETTES[0]
+
+const formatRelDate = dateStr => {
+  if (!dateStr) return ''
+  const d = new Date(dateStr)
+  if (isNaN(d)) return ''
+  const days = Math.floor((Date.now() - d) / 86400000)
+  if (days === 0) return 'Today'
+  if (days === 1) return 'Yesterday'
+  if (days < 7)   return `${days}d ago`
+  if (days < 30)  return `${Math.floor(days / 7)}w ago`
+  if (days < 365) return `${Math.floor(days / 30)}mo ago`
+  return `${Math.floor(days / 365)}y ago`
+}
+
+// ── Actions ───────────────────────────────────────────────────────────────────
+const setMode     = next => { mode.value = normalizeMode(next); syncListRouteQuery() }
 const setViewMode = next => {
-  const normalized = String(next).toLowerCase()
-  if (normalized !== 'grid' && normalized !== 'list') return
-  viewMode.value = normalized
-  syncListRouteQuery()
+  const n = String(next).toLowerCase()
+  if (n !== 'grid' && n !== 'list') return
+  viewMode.value = n; syncListRouteQuery()
 }
-
-const selectFile = id => {
-  selectedId.value = Number(id)
-  detailOpen.value = true
-  syncListRouteQuery()
-}
-
-const closeDetail = () => {
-  selectedId.value = null
-  detailOpen.value = false
-  syncListRouteQuery()
-}
+const selectFile  = id => { selectedId.value = Number(id); detailOpen.value = true; syncListRouteQuery() }
+const closeDetail = () => { selectedId.value = null; detailOpen.value = false; syncListRouteQuery() }
 
 const openTotalInformation = () => {
   if (!selectedId.value) return
   router.push({
     name: 'era-assessment-files-total-information',
     params: { assessmentId: Number(selectedId.value) },
-    query: {
-      mode: mode.value,
-      view: viewMode.value,
-    },
+    query: { mode: mode.value, view: viewMode.value },
   })
 }
 
+const quickOpen = id => {
+  router.push({
+    name: 'era-assessment-files-total-information',
+    params: { assessmentId: Number(id) },
+    query: { mode: mode.value, view: viewMode.value },
+  })
+}
+
+// ── Route sync ────────────────────────────────────────────────────────────────
 const syncPanelStateFromRoute = () => {
   mode.value = normalizeMode(route.query.mode)
-
-  const queryView = String(route.query.view || '').toLowerCase()
-  if (queryView === 'grid' || queryView === 'list') {
-    viewMode.value = queryView
-  }
-
-  const querySelected = Number(route.query.selected)
-  if (!Number.isFinite(querySelected) || querySelected <= 0) {
-    selectedId.value = null
-    detailOpen.value = false
-    return
-  }
-
-  const exists = files.value.some(file => Number(file.id) === querySelected)
-  if (!exists) {
-    selectedId.value = null
-    detailOpen.value = false
-    return
-  }
-
-  selectedId.value = querySelected
-  detailOpen.value = true
+  const qv = String(route.query.view || '').toLowerCase()
+  if (qv === 'grid' || qv === 'list') viewMode.value = qv
+  const qs = Number(route.query.selected)
+  if (!Number.isFinite(qs) || qs <= 0) { selectedId.value = null; detailOpen.value = false; return }
+  if (!files.value.some(f => Number(f.id) === qs)) { selectedId.value = null; detailOpen.value = false; return }
+  selectedId.value = qs; detailOpen.value = true
 }
 
 const syncListRouteQuery = () => {
   if (route.name !== 'era-assessment-files') return
-
-  const nextQuery = {}
-  if (selectedId.value) nextQuery.selected = String(selectedId.value)
-  if (mode.value === 'edit') nextQuery.mode = 'edit'
-  if (viewMode.value === 'list') nextQuery.view = 'list'
-
-  const currentQuery = {}
-  if (route.query.selected) currentQuery.selected = String(route.query.selected)
-  if (route.query.mode) currentQuery.mode = String(route.query.mode)
-  if (route.query.view) currentQuery.view = String(route.query.view)
-
-  if (JSON.stringify(nextQuery) === JSON.stringify(currentQuery)) return
-
-  router.replace({
-    name: 'era-assessment-files',
-    query: nextQuery,
-  })
+  const nq = {}
+  if (selectedId.value)     nq.selected = String(selectedId.value)
+  if (mode.value === 'edit') nq.mode    = 'edit'
+  if (viewMode.value === 'list') nq.view= 'list'
+  const cq = {}
+  if (route.query.selected) cq.selected = String(route.query.selected)
+  if (route.query.mode)     cq.mode     = String(route.query.mode)
+  if (route.query.view)     cq.view     = String(route.query.view)
+  if (JSON.stringify(nq) === JSON.stringify(cq)) return
+  router.replace({ name: 'era-assessment-files', query: nq })
 }
 
+// ── Data ──────────────────────────────────────────────────────────────────────
 const loadFiles = async () => {
   loadingFiles.value = true
   listError.value = ''
-
   try {
-    const response = await api.get('/era-assessments')
-    files.value = Array.isArray(response.data?.assessments) ? response.data.assessments : []
+    const res = await api.get('/era-assessments')
+    files.value = Array.isArray(res.data?.assessments) ? res.data.assessments : []
     syncPanelStateFromRoute()
-  } catch (error) {
-    console.error(error)
+  } catch {
     listError.value = 'Unable to load ERA assessment files.'
   } finally {
     loadingFiles.value = false
   }
 }
 
-const getInitials = name => {
-  if (!name) return 'ER'
-  return name
-    .split(' ')
-    .slice(0, 2)
-    .map(word => word[0])
-    .join('')
-    .toUpperCase()
-}
-
-const FILE_COLORS = ['#3b7dd8', '#2a7a52', '#8b5cf6', '#d97706', '#dc2626', '#0891b2', '#7c3aed', '#059669']
-const fileColor = id => FILE_COLORS[Number(id) % FILE_COLORS.length]
-
 onMounted(loadFiles)
-
-watch(
-  () => route.fullPath,
-  () => {
-    if (route.name !== 'era-assessment-files') return
-    syncPanelStateFromRoute()
-  }
-)
+watch(() => route.fullPath, () => {
+  if (route.name !== 'era-assessment-files') return
+  syncPanelStateFromRoute()
+})
 </script>
 
 <template>
-  <div class="explorer-root">
-    <div class="toolbar">
-      <div class="toolbar-left">
-        <div class="address-bar">
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />
-            <polyline points="9 22 9 12 15 12 15 22" />
-          </svg>
-          <span class="addr-sep">></span>
-          <span class="addr-part">ERA System</span>
-          <span class="addr-sep">></span>
-          <span class="addr-part active">Assessment Files</span>
-        </div>
-      </div>
+  <div class="era-root">
 
-      <div class="toolbar-center">
-        <div class="search-box">
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <circle cx="11" cy="11" r="8" />
-            <line x1="21" y1="21" x2="16.65" y2="16.65" />
-          </svg>
-          <input v-model="searchQuery" placeholder="Search files..." class="search-input" />
+    <!-- ══ Stats + Toolbar bar ══ -->
+    <div class="top-bar">
+      <div class="stats-group">
+        <div class="stat">
+          <span class="stat-val">{{ files.length }}</span>
+          <span class="stat-lbl">Files</span>
+        </div>
+        <div class="stat-div"></div>
+        <div class="stat">
+          <span class="stat-val">{{ uniqueDepartmentCount }}</span>
+          <span class="stat-lbl">Departments</span>
+        </div>
+        <div class="stat-div"></div>
+        <div class="stat">
+          <span class="stat-val">{{ totalProcessCount }}</span>
+          <span class="stat-lbl">Processes</span>
+        </div>
+        <div class="stat-div"></div>
+        <div class="stat">
+          <span class="stat-val stat-date">{{ latestAssessmentDate }}</span>
+          <span class="stat-lbl">Latest Assessment</span>
         </div>
       </div>
 
       <div class="toolbar-right">
-        <div class="view-toggle">
-          <button type="button" class="view-btn" :class="{ active: viewMode === 'grid' }" @click="setViewMode('grid')" title="Grid view">
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
-              <rect x="3" y="3" width="7" height="7" rx="1" />
-              <rect x="14" y="3" width="7" height="7" rx="1" />
-              <rect x="3" y="14" width="7" height="7" rx="1" />
-              <rect x="14" y="14" width="7" height="7" rx="1" />
+        <div class="search-wrap">
+          <svg class="search-ico" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
+          </svg>
+          <input v-model="searchQuery" placeholder="Search files, departments, processes…" class="search-input" />
+        </div>
+
+        <div class="view-btns">
+          <button type="button" class="vb" :class="{ 'vb-on': viewMode==='grid' }" @click="setViewMode('grid')" title="Grid">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor">
+              <rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/>
+              <rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/>
             </svg>
           </button>
-          <button type="button" class="view-btn" :class="{ active: viewMode === 'list' }" @click="setViewMode('list')" title="List view">
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-              <line x1="8" y1="6" x2="21" y2="6" />
-              <line x1="8" y1="12" x2="21" y2="12" />
-              <line x1="8" y1="18" x2="21" y2="18" />
-              <line x1="3" y1="6" x2="3.01" y2="6" />
-              <line x1="3" y1="12" x2="3.01" y2="12" />
-              <line x1="3" y1="18" x2="3.01" y2="18" />
+          <button type="button" class="vb" :class="{ 'vb-on': viewMode==='list' }" @click="setViewMode('list')" title="List">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/>
+              <line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/>
             </svg>
           </button>
         </div>
-        <div class="file-count">{{ filteredFiles.length }} item{{ filteredFiles.length !== 1 ? 's' : '' }}</div>
+
+        <span class="item-count">{{ filteredFiles.length }} item{{ filteredFiles.length !== 1 ? 's' : '' }}</span>
       </div>
     </div>
 
-    <div class="explorer-body">
+    <!-- ══ Body ══ -->
+    <div class="era-body">
       <div class="file-area">
-        <div v-if="loadingFiles" class="empty-state">
+
+        <div v-if="loadingFiles" class="blank-state">
           <div class="spinner"></div>
-          <span>Loading files...</span>
+          <span>Loading files…</span>
         </div>
 
-        <div v-else-if="listError" class="empty-state error-state">
+        <div v-else-if="listError" class="blank-state err">
           <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
-            <circle cx="12" cy="12" r="10" />
-            <line x1="12" y1="8" x2="12" y2="12" />
-            <line x1="12" y1="16" x2="12.01" y2="16" />
+            <circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/>
           </svg>
           <span>{{ listError }}</span>
         </div>
 
-        <div v-else-if="filteredFiles.length === 0" class="empty-state">
+        <div v-else-if="filteredFiles.length === 0" class="blank-state">
           <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1">
-            <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
+            <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/>
           </svg>
           <span>No assessment files found</span>
         </div>
 
-        <div v-else-if="viewMode === 'grid'" class="grid-view">
-          <button
+        <!-- ── GRID VIEW ── -->
+        <div v-else-if="viewMode === 'grid'" class="card-grid">
+          <div
             v-for="file in filteredFiles"
             :key="file.id"
-            type="button"
-            class="file-icon-card"
-            :class="{ selected: Number(file.id) === Number(selectedId) }"
+            class="file-card"
+            :class="{ 'card-sel': Number(file.id) === Number(selectedId) }"
             @click="selectFile(file.id)"
           >
-            <div class="file-icon" :style="{ background: fileColor(file.id) }">
-              <svg class="doc-bg" width="48" height="60" viewBox="0 0 48 60" fill="none">
-                <rect width="48" height="60" rx="4" fill="rgba(255,255,255,0.12)" />
-                <path d="M30 2 L30 14 L42 14" stroke="rgba(255,255,255,0.3)" stroke-width="1.5" fill="none" />
-                <rect x="8" y="22" width="24" height="2" rx="1" fill="rgba(255,255,255,0.3)" />
-                <rect x="8" y="28" width="32" height="2" rx="1" fill="rgba(255,255,255,0.25)" />
-                <rect x="8" y="34" width="28" height="2" rx="1" fill="rgba(255,255,255,0.2)" />
-                <rect x="8" y="40" width="20" height="2" rx="1" fill="rgba(255,255,255,0.15)" />
-              </svg>
-              <div class="file-initials">{{ getInitials(file.assessor_name) }}</div>
-              <div class="era-badge">ERA</div>
+            <div class="card-hd" :style="{ background: fileColor(file.id) }">
+              <div class="card-avatar">{{ getInitials(file.assessor_name) }}</div>
+              <div class="card-hd-right">
+                <span class="card-era-badge">ERA</span>
+                <span class="card-num">#{{ file.id }}</span>
+              </div>
             </div>
-            <div class="file-name">{{ file.assessor_name || 'Unknown' }}</div>
-            <div class="file-meta">{{ file.assessment_date }}</div>
-            <div class="file-dept">{{ file.department }}</div>
-          </button>
+
+            <div class="card-bd">
+              <div class="card-name">{{ file.assessor_name || 'Unknown Assessor' }}</div>
+
+              <div class="card-dept-row">
+                <span
+                  class="card-dept"
+                  :style="{
+                    background:  deptPalette(file.department).bg,
+                    color:       deptPalette(file.department).color,
+                    borderColor: deptPalette(file.department).border,
+                  }"
+                >{{ file.department || 'No department' }}</span>
+              </div>
+
+              <div class="card-meta-rows">
+                <div class="meta-row">
+                  <svg class="meta-ic" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/>
+                    <line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/>
+                  </svg>
+                  <span>{{ file.assessment_date || '—' }}</span>
+                </div>
+                <div v-if="file.working_hours" class="meta-row">
+                  <svg class="meta-ic" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/>
+                  </svg>
+                  <span>{{ file.working_hours }}</span>
+                </div>
+              </div>
+
+              <div class="card-procs">
+                <div class="procs-head">
+                  <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+                    <circle cx="12" cy="12" r="3"/>
+                    <path d="M12 1v4M12 19v4M4.22 4.22l2.83 2.83M16.95 16.95l2.83 2.83M1 12h4M19 12h4M4.22 19.78l2.83-2.83M16.95 7.05l2.83-2.83"/>
+                  </svg>
+                  <span>{{ file.processes_count || 0 }} Process{{ (file.processes_count || 0) !== 1 ? 'es' : '' }}</span>
+                </div>
+                <div class="chip-row">
+                  <span v-for="name in (file.process_names || []).slice(0, 2)" :key="name" class="proc-chip">{{ name }}</span>
+                  <span v-if="(file.process_names || []).length > 2" class="chip-more">+{{ file.process_names.length - 2 }} more</span>
+                  <span v-if="!(file.process_names || []).length" class="chip-none">No processes recorded</span>
+                </div>
+              </div>
+            </div>
+
+            <div class="card-ft">
+              <span class="card-age">{{ formatRelDate(file.updated_at) }}</span>
+              <button type="button" class="open-btn" @click.stop="quickOpen(file.id)">
+                View Details
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+                  <line x1="5" y1="12" x2="19" y2="12"/><polyline points="12 5 19 12 12 19"/>
+                </svg>
+              </button>
+            </div>
+          </div>
         </div>
 
+        <!-- ── LIST VIEW ── -->
         <div v-else class="list-view">
-          <div class="list-header">
-            <span class="lh-name">Name</span>
-            <span class="lh-date">Date</span>
-            <span class="lh-dept">Department</span>
-            <span class="lh-id">ID</span>
+          <div class="lv-head">
+            <span></span><span>Name</span><span>Department</span>
+            <span>Processes</span><span>Date</span><span>ID</span>
           </div>
           <button
             v-for="file in filteredFiles"
             :key="file.id"
             type="button"
-            class="list-row"
-            :class="{ selected: Number(file.id) === Number(selectedId) }"
+            class="lv-row"
+            :class="{ 'lv-sel': Number(file.id) === Number(selectedId) }"
             @click="selectFile(file.id)"
           >
-            <span class="lr-icon" :style="{ background: fileColor(file.id) }">{{ getInitials(file.assessor_name) }}</span>
-            <span class="lr-name">{{ file.assessor_name || 'Unknown' }}</span>
-            <span class="lr-date">{{ file.assessment_date }}</span>
-            <span class="lr-dept">{{ file.department }}</span>
-            <span class="lr-id">#{{ file.id }}</span>
+            <span class="lv-icon" :style="{ background: fileColor(file.id) }">{{ getInitials(file.assessor_name) }}</span>
+            <span class="lv-name">{{ file.assessor_name || 'Unknown' }}</span>
+            <span class="lv-dept">{{ file.department || '—' }}</span>
+            <span class="lv-proc">
+              <span v-for="p in (file.process_names || []).slice(0, 2)" :key="p" class="proc-chip sm">{{ p }}</span>
+              <span v-if="(file.process_names || []).length > 2" class="chip-more">+{{ file.process_names.length - 2 }}</span>
+              <span v-if="!(file.process_names || []).length" class="chip-none">—</span>
+            </span>
+            <span class="lv-date">{{ file.assessment_date }}</span>
+            <span class="lv-id">#{{ file.id }}</span>
           </button>
         </div>
+
       </div>
 
+      <!-- ── Detail panel ── -->
       <aside class="detail-panel" :class="{ open: detailOpen }">
-        <div v-if="!detailOpen" class="detail-empty">
-          <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1">
-            <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
+        <div v-if="!detailOpen" class="dp-empty">
+          <svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1">
+            <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/>
           </svg>
-          <span>Select a file to continue</span>
+          <span>Select a file</span>
         </div>
 
         <template v-else>
-          <div class="panel-header">
-            <div class="panel-file-icon" :style="{ background: selectedMeta ? fileColor(selectedMeta.id) : '#3b7dd8' }">
+          <div class="dp-hd">
+            <div class="dp-avatar" :style="{ background: selectedMeta ? fileColor(selectedMeta.id) : '#3b7dd8' }">
               {{ getInitials(selectedMeta?.assessor_name) }}
             </div>
-            <div class="panel-title-block">
-              <div class="panel-title">{{ selectedMeta?.assessor_name }}</div>
-              <div class="panel-subtitle">Assessment ID #{{ selectedMeta?.id }}</div>
+            <div class="dp-title-block">
+              <div class="dp-title">{{ selectedMeta?.assessor_name }}</div>
+              <div class="dp-sub">Assessment ID #{{ selectedMeta?.id }}</div>
             </div>
-            <button type="button" class="close-btn" @click="closeDetail" title="Close">
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
-                <line x1="18" y1="6" x2="6" y2="18" />
-                <line x1="6" y1="6" x2="18" y2="18" />
+            <button type="button" class="dp-close" @click="closeDetail">
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+                <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
               </svg>
             </button>
           </div>
 
-          <div class="panel-actions">
-            <button type="button" class="pa-btn" :class="{ 'pa-active': mode === 'preview' }" @click="setMode('preview')">
-              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" />
-                <circle cx="12" cy="12" r="3" />
-              </svg>
-              Preview
-            </button>
-            <button type="button" class="pa-btn" :class="{ 'pa-active': mode === 'edit' }" @click="setMode('edit')">
-              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" />
-                <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z" />
-              </svg>
-              Edit
-            </button>
-            <button type="button" class="pa-btn pa-open" :disabled="!selectedId" @click="openTotalInformation">
-              View Total Information
-            </button>
+          <div class="dp-mode-row">
+            <button type="button" class="mode-btn" :class="{ 'mode-on': mode==='preview' }" @click="setMode('preview')">Preview</button>
+            <button type="button" class="mode-btn" :class="{ 'mode-on': mode==='edit' }" @click="setMode('edit')">Edit</button>
+            <button type="button" class="mode-btn mode-open" :disabled="!selectedId" @click="openTotalInformation">View Total Information</button>
           </div>
 
-          <div class="panel-content">
-            <div class="summary-grid">
-              <div class="summary-item">
-                <span class="summary-label">Assessor</span>
-                <span class="summary-value">{{ selectedMeta?.assessor_name || '-' }}</span>
-              </div>
-              <div class="summary-item">
-                <span class="summary-label">Date</span>
-                <span class="summary-value">{{ selectedMeta?.assessment_date || '-' }}</span>
-              </div>
-              <div class="summary-item full">
-                <span class="summary-label">Department</span>
-                <span class="summary-value">{{ selectedMeta?.department || '-' }}</span>
-              </div>
-              <div class="summary-item full">
-                <span class="summary-label">Mode</span>
-                <span class="summary-value">{{ mode === 'edit' ? 'Edit' : 'Preview' }}</span>
+          <div class="dp-body">
+            <div class="dp-field"><span class="dp-lbl">Assessor</span><span class="dp-val">{{ selectedMeta?.assessor_name || '—' }}</span></div>
+            <div class="dp-field"><span class="dp-lbl">Date</span><span class="dp-val">{{ selectedMeta?.assessment_date || '—' }}</span></div>
+            <div class="dp-field full"><span class="dp-lbl">Department</span><span class="dp-val">{{ selectedMeta?.department || '—' }}</span></div>
+            <div v-if="selectedMeta?.working_hours" class="dp-field full">
+              <span class="dp-lbl">Working Hours</span><span class="dp-val">{{ selectedMeta.working_hours }}</span>
+            </div>
+            <div class="dp-field full">
+              <span class="dp-lbl">Processes ({{ selectedMeta?.processes_count || 0 }})</span>
+              <div class="dp-proc-chips">
+                <span v-for="p in (selectedMeta?.process_names || [])" :key="p" class="proc-chip">{{ p }}</span>
+                <span v-if="!(selectedMeta?.process_names || []).length" class="chip-none">None recorded</span>
               </div>
             </div>
-
-            <p class="summary-note">
-              The full assessment details now open on a dedicated wide page for better readability.
-              Click "View Total Information" to continue.
-            </p>
+            <div class="dp-field full"><span class="dp-lbl">Mode</span><span class="dp-val">{{ mode === 'edit' ? 'Edit' : 'Preview' }}</span></div>
           </div>
         </template>
       </aside>
     </div>
 
+    <!-- ══ Status bar ══ -->
     <div class="status-bar">
       <span>{{ filteredFiles.length }} item(s)</span>
-      <span v-if="selectedMeta">{{ selectedMeta.assessor_name }} - {{ selectedMeta.department }}</span>
+      <span v-if="selectedMeta">{{ selectedMeta.assessor_name }} — {{ selectedMeta.department }}</span>
     </div>
+
   </div>
 </template>
 
@@ -363,448 +408,280 @@ watch(
 
 * { box-sizing: border-box; }
 
-.explorer-root {
-  font-family: 'IBM Plex Sans', sans-serif;
+.era-root {
+  font-family: Arial, sans-serif;
   display: flex;
   flex-direction: column;
-  height: calc(100vh - 120px);
+  height: 100%;
   background: #f0f2f5;
-  border-radius: 10px;
   overflow: hidden;
-  border: 1px solid #d0d5dd;
-  box-shadow: 0 2px 12px rgba(0,0,0,0.08);
+  border-top: 1px solid #d0d5dd;
 }
 
-.toolbar {
+/* ── Top bar ───────────────────────────────────────────────────────────────── */
+.top-bar {
   display: flex;
   align-items: center;
-  gap: 12px;
-  padding: 8px 14px;
-  background: #ffffff;
+  gap: 16px;
+  padding: 0 20px;
+  height: 60px;
+  flex-shrink: 0;
+  background: #fff;
   border-bottom: 1px solid #e0e4ea;
+}
+
+.stats-group {
+  display: flex;
+  align-items: center;
   flex-shrink: 0;
 }
 
-.toolbar-left { flex: 1; }
-.toolbar-center { flex: 1; max-width: 360px; }
-.toolbar-right { display: flex; align-items: center; gap: 10px; }
-
-.address-bar {
-  display: flex;
-  align-items: center;
-  gap: 5px;
-  background: #f3f5f8;
-  border: 1px solid #dde1e8;
-  border-radius: 6px;
-  padding: 5px 10px;
-  font-size: 12.5px;
-  color: #5a6578;
-}
-
-.addr-sep { color: #b0b8c4; }
-.addr-part.active { color: #2f3e4d; font-weight: 600; }
-
-.search-box {
-  display: flex;
-  align-items: center;
-  gap: 7px;
-  background: #f3f5f8;
-  border: 1px solid #dde1e8;
-  border-radius: 6px;
-  padding: 5px 10px;
-  color: #8a93a0;
-}
-
-.search-input {
-  border: none;
-  background: transparent;
-  outline: none;
-  font-size: 12.5px;
-  font-family: inherit;
-  width: 100%;
-  color: #2f3e4d;
-}
-
-.search-input::placeholder { color: #9aa3ae; }
-
-.view-toggle {
-  display: flex;
-  background: #f0f2f5;
-  border: 1px solid #dde1e8;
-  border-radius: 6px;
-  overflow: hidden;
-}
-
-.view-btn {
-  padding: 5px 9px;
-  border: none;
-  background: transparent;
-  cursor: pointer;
-  color: #8a95a4;
-  display: flex;
-  align-items: center;
-}
-
-.view-btn.active { background: #2f3e4d; color: #fff; }
-.view-btn:hover:not(.active) { background: #e4e8ee; }
-
-.file-count { font-size: 12px; color: #8a95a4; white-space: nowrap; }
-
-.explorer-body {
-  display: flex;
-  flex: 1;
-  overflow: hidden;
-}
-
-.file-area {
-  flex: 1;
-  overflow-y: auto;
-  padding: 16px;
-  min-width: 0;
-}
-
-.empty-state {
+.stat {
   display: flex;
   flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: 12px;
-  height: 100%;
-  min-height: 200px;
-  color: #9aa3ae;
-  font-size: 13px;
+  padding: 0 20px;
+  gap: 2px;
 }
 
-.error-state { color: #c0392b; }
+.stat-val  { font-size: 16px; font-weight: 700; color: #1e2a36; line-height: 1.1; }
+.stat-date { font-size: 13px; }
+.stat-lbl  { font-size: 10px; color: #9aa3ae; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; }
+
+.stat-div { width: 1px; height: 30px; background: #e4e8ee; flex-shrink: 0; }
+
+.toolbar-right { display: flex; align-items: center; gap: 10px; margin-left: auto; }
+
+.search-wrap {
+  display: flex; align-items: center; gap: 7px;
+  background: #f3f5f8; border: 1px solid #dde1e8; border-radius: 7px;
+  padding: 6px 12px; color: #8a93a0; min-width: 280px;
+}
+
+.search-ico { flex-shrink: 0; }
+
+.search-input {
+  border: none; background: transparent; outline: none;
+  font-size: 12.5px; font-family: inherit; width: 100%; color: #2f3e4d;
+}
+.search-input::placeholder { color: #9aa3ae; }
+
+.view-btns {
+  display: flex; background: #f0f2f5; border: 1px solid #dde1e8;
+  border-radius: 7px; overflow: hidden;
+}
+
+.vb {
+  padding: 6px 10px; border: none; background: transparent;
+  cursor: pointer; color: #8a95a4; display: flex; align-items: center;
+}
+.vb.vb-on { background: #2f3e4d; color: #fff; }
+.vb:hover:not(.vb-on) { background: #e4e8ee; }
+
+.item-count { font-size: 12px; color: #8a95a4; white-space: nowrap; }
+
+/* ── Body ──────────────────────────────────────────────────────────────────── */
+.era-body { display: flex; flex: 1; overflow: hidden; min-height: 0; }
+
+.file-area { flex: 1; min-width: 0; overflow-y: auto; padding: 16px 20px; }
+
+/* ── States ────────────────────────────────────────────────────────────────── */
+.blank-state {
+  display: flex; flex-direction: column; align-items: center;
+  justify-content: center; gap: 12px; height: 100%; min-height: 220px;
+  color: #9aa3ae; font-size: 13px;
+}
+.blank-state.err { color: #c0392b; }
 
 .spinner {
-  width: 28px;
-  height: 28px;
-  border: 3px solid #e0e4ea;
-  border-top-color: #3b7dd8;
-  border-radius: 50%;
-  animation: spin 0.7s linear infinite;
+  width: 28px; height: 28px;
+  border: 3px solid #e0e4ea; border-top-color: #3b7dd8;
+  border-radius: 50%; animation: spin 0.7s linear infinite;
 }
-
 @keyframes spin { to { transform: rotate(360deg); } }
 
-.grid-view {
+/* ── Card Grid ─────────────────────────────────────────────────────────────── */
+.card-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(110px, 1fr));
-  gap: 6px;
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  gap: 14px;
   align-content: start;
 }
 
-.file-icon-card {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 6px;
-  padding: 12px 8px 10px;
-  background: transparent;
-  border: 2px solid transparent;
-  border-radius: 8px;
-  cursor: pointer;
-  text-align: center;
-  font-family: inherit;
+.file-card {
+  display: flex; flex-direction: column;
+  background: #fff; border: 2px solid #e4e8ee; border-radius: 12px;
+  overflow: hidden; cursor: pointer;
+  transition: border-color 0.15s, box-shadow 0.15s, transform 0.12s;
+}
+.file-card:hover {
+  border-color: #a8c4f0;
+  box-shadow: 0 6px 20px rgba(59,125,216,0.13);
+  transform: translateY(-2px);
+}
+.file-card.card-sel { border-color: #3b7dd8; box-shadow: 0 6px 24px rgba(59,125,216,0.2); }
+
+.card-hd {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 18px 18px 16px;
+}
+.card-avatar {
+  width: 52px; height: 52px; border-radius: 12px;
+  background: rgba(255,255,255,0.2); border: 2px solid rgba(255,255,255,0.3);
+  display: flex; align-items: center; justify-content: center;
+  color: #fff; font-size: 18px; font-weight: 700;
+}
+.card-hd-right { display: flex; flex-direction: column; align-items: flex-end; gap: 4px; }
+.card-era-badge {
+  background: rgba(0,0,0,0.22); color: #fff; font-size: 9px;
+  font-weight: 700; padding: 2px 6px; border-radius: 4px; letter-spacing: 0.08em;
+}
+.card-num { color: rgba(255,255,255,0.8); font-size: 12px; font-weight: 600; }
+
+.card-bd { flex: 1; padding: 16px 18px 12px; display: flex; flex-direction: column; gap: 10px; }
+
+.card-name { font-size: 15px; font-weight: 700; color: #1e2a36; line-height: 1.35; }
+
+.card-dept-row { display: flex; }
+.card-dept {
+  display: inline-block; padding: 3px 11px; border-radius: 99px; border: 1px solid;
+  font-size: 11.5px; font-weight: 600; max-width: 100%;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
 
-.file-icon-card:hover {
-  background: rgba(59, 125, 216, 0.08);
-  border-color: rgba(59, 125, 216, 0.2);
+.card-meta-rows { display: flex; flex-direction: column; gap: 5px; }
+.meta-row { display: flex; align-items: center; gap: 6px; font-size: 12.5px; color: #5a6578; }
+.meta-ic  { color: #9aa3ae; flex-shrink: 0; }
+
+.card-procs { display: flex; flex-direction: column; gap: 6px; border-top: 1px solid #f0f2f5; padding-top: 10px; }
+.procs-head { display: flex; align-items: center; gap: 5px; font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em; color: #8a95a4; }
+.chip-row   { display: flex; flex-wrap: wrap; gap: 5px; }
+
+.proc-chip {
+  display: inline-block; padding: 3px 9px;
+  background: #f0f4ff; color: #3b5bdb; border: 1px solid #c5d5fb;
+  border-radius: 99px; font-size: 11.5px; font-weight: 600;
+  max-width: 180px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
+.proc-chip.sm { font-size: 11px; padding: 2px 7px; }
 
-.file-icon-card.selected {
-  background: rgba(59, 125, 216, 0.12);
-  border-color: #3b7dd8;
+.chip-more {
+  display: inline-block; padding: 3px 9px;
+  background: #f4f6f9; color: #7a8694; border: 1px solid #dde1e8;
+  border-radius: 99px; font-size: 11.5px; font-weight: 600;
 }
+.chip-none { font-size: 11.5px; color: #b0bac5; font-style: italic; }
 
-.file-icon {
-  position: relative;
-  width: 60px;
-  height: 72px;
-  border-radius: 6px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  box-shadow: 0 3px 10px rgba(0,0,0,0.18);
-  flex-shrink: 0;
-  overflow: hidden;
+.card-ft {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 10px 18px 14px; border-top: 1px solid #f0f2f5;
 }
+.card-age { font-size: 11.5px; color: #a0abb6; }
 
-.doc-bg {
-  position: absolute;
-  inset: 0;
-  width: 100%;
-  height: 100%;
+.open-btn {
+  display: inline-flex; align-items: center; gap: 5px;
+  padding: 6px 13px; background: #2f3e4d; color: #fff;
+  border: none; border-radius: 6px; font-size: 12px; font-weight: 600;
+  font-family: inherit; cursor: pointer; transition: background 0.12s;
 }
+.open-btn:hover { background: #1e2a36; }
 
-.file-initials {
-  position: relative;
-  z-index: 1;
-  color: #fff;
-  font-size: 15px;
-  font-weight: 700;
-  letter-spacing: 0.5px;
-  text-shadow: 0 1px 3px rgba(0,0,0,0.3);
-  margin-top: 8px;
-}
+/* ── List View ─────────────────────────────────────────────────────────────── */
+.list-view  { display: flex; flex-direction: column; gap: 2px; }
 
-.era-badge {
-  position: absolute;
-  bottom: 4px;
-  right: 4px;
-  background: rgba(0,0,0,0.35);
-  color: #fff;
-  font-size: 8px;
-  font-weight: 700;
-  padding: 1px 4px;
-  border-radius: 3px;
-  letter-spacing: 0.5px;
-}
-
-.file-name {
-  font-size: 11.5px;
-  font-weight: 600;
-  color: #2f3e4d;
-  line-height: 1.3;
-  word-break: break-word;
-  max-width: 100%;
-}
-
-.file-meta { font-size: 10.5px; color: #8a95a4; }
-
-.file-dept {
-  font-size: 10px;
-  color: #aab0b8;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  max-width: 100%;
-}
-
-.list-view {
-  display: flex;
-  flex-direction: column;
-  gap: 1px;
-}
-
-.list-header {
+.lv-head {
   display: grid;
-  grid-template-columns: 1fr 160px 200px 60px;
-  padding: 6px 12px;
-  font-size: 11.5px;
-  font-weight: 700;
-  color: #7a8694;
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
-  background: #e8ebef;
-  border-radius: 6px;
-  margin-bottom: 4px;
+  grid-template-columns: 32px 1fr 200px 220px 130px 60px;
+  padding: 7px 14px; font-size: 11px; font-weight: 700; color: #7a8694;
+  text-transform: uppercase; letter-spacing: 0.06em;
+  background: #e8ebef; border-radius: 7px; margin-bottom: 4px;
 }
-
-.list-row {
+.lv-row {
   display: grid;
-  grid-template-columns: auto 1fr 160px 200px 60px;
-  gap: 0 10px;
-  align-items: center;
-  padding: 7px 12px;
-  background: #fff;
-  border: 1px solid #eaecf0;
-  border-radius: 6px;
-  cursor: pointer;
-  font-family: inherit;
-  font-size: 12.5px;
-  color: #2f3e4d;
-  text-align: left;
+  grid-template-columns: 32px 1fr 200px 220px 130px 60px;
+  gap: 0 10px; align-items: center; padding: 9px 14px;
+  background: #fff; border: 1px solid #eaecf0; border-radius: 7px;
+  cursor: pointer; font-family: inherit; font-size: 12.5px;
+  color: #2f3e4d; text-align: left; transition: background 0.1s;
 }
+.lv-row:hover { background: #f0f6ff; border-color: #c5d9f5; }
+.lv-row.lv-sel { background: #e8f0fd; border-color: #3b7dd8; }
 
-.list-row:hover { background: #f0f6ff; border-color: #c5d9f5; }
-.list-row.selected { background: #e8f0fd; border-color: #3b7dd8; }
-
-.lr-icon {
-  width: 28px;
-  height: 28px;
-  border-radius: 5px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  color: #fff;
-  font-size: 10px;
-  font-weight: 700;
-  flex-shrink: 0;
+.lv-icon {
+  width: 30px; height: 30px; border-radius: 6px; flex-shrink: 0;
+  display: flex; align-items: center; justify-content: center;
+  color: #fff; font-size: 10px; font-weight: 700;
 }
+.lv-name { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.lv-dept, .lv-date { color: #6e7d8e; font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.lv-proc { display: flex; flex-wrap: wrap; gap: 4px; }
+.lv-id   { color: #a0abb6; font-size: 11.5px; }
 
-.lr-name { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.lr-date, .lr-dept { color: #6e7d8e; font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.lr-id { color: #a0abb6; font-size: 11.5px; }
-.lh-name, .lh-date, .lh-dept, .lh-id { overflow: hidden; }
-
+/* ── Detail Panel ──────────────────────────────────────────────────────────── */
 .detail-panel {
-  width: 0;
-  overflow: hidden;
-  border-left: 0 solid #dde1e8;
-  background: #fff;
-  display: flex;
-  flex-direction: column;
+  width: 0; overflow: hidden; border-left: 0 solid #dde1e8;
+  background: #fff; display: flex; flex-direction: column;
   transition: width 0.28s cubic-bezier(0.4,0,0.2,1), border-left-width 0.28s;
   flex-shrink: 0;
 }
+.detail-panel.open { width: 340px; border-left-width: 1px; }
 
-.detail-panel.open {
-  width: 480px;
-  border-left-width: 1px;
+.dp-empty {
+  display: flex; flex-direction: column; align-items: center;
+  justify-content: center; gap: 10px; height: 100%;
+  color: #b0bac5; font-size: 13px;
 }
 
-.detail-empty {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: 10px;
-  height: 100%;
-  color: #b0bac5;
-  font-size: 13px;
+.dp-hd {
+  display: flex; align-items: center; gap: 12px;
+  padding: 14px 16px; border-bottom: 1px solid #eaecf0;
+  background: #f8fafc; flex-shrink: 0;
 }
-
-.panel-header {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  padding: 14px 16px;
-  border-bottom: 1px solid #eaecf0;
-  background: #f8fafc;
-  flex-shrink: 0;
-}
-
-.panel-file-icon {
-  width: 40px;
-  height: 40px;
-  border-radius: 8px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  color: #fff;
-  font-size: 14px;
-  font-weight: 700;
-  flex-shrink: 0;
+.dp-avatar {
+  width: 38px; height: 38px; border-radius: 8px;
+  display: flex; align-items: center; justify-content: center;
+  color: #fff; font-size: 13px; font-weight: 700; flex-shrink: 0;
   box-shadow: 0 2px 8px rgba(0,0,0,0.15);
 }
-
-.panel-title-block { flex: 1; min-width: 0; }
-.panel-title { font-size: 14px; font-weight: 700; color: #1e2a36; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.panel-subtitle { font-size: 11.5px; color: #8a95a4; }
-
-.close-btn {
-  width: 28px;
-  height: 28px;
-  border: 1px solid #dde1e8;
-  border-radius: 6px;
-  background: #fff;
-  cursor: pointer;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  color: #7a8694;
-  flex-shrink: 0;
+.dp-title-block { flex: 1; min-width: 0; }
+.dp-title { font-size: 13.5px; font-weight: 700; color: #1e2a36; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dp-sub   { font-size: 11px; color: #8a95a4; }
+.dp-close {
+  width: 26px; height: 26px; border: 1px solid #dde1e8; border-radius: 6px;
+  background: #fff; cursor: pointer; display: flex; align-items: center;
+  justify-content: center; color: #7a8694; flex-shrink: 0;
 }
+.dp-close:hover { background: #f0f2f5; }
 
-.close-btn:hover { background: #f0f2f5; color: #2f3e4d; }
-
-.panel-actions {
-  display: flex;
-  gap: 6px;
-  padding: 10px 16px;
-  border-bottom: 1px solid #eaecf0;
-  flex-shrink: 0;
+.dp-mode-row { display: flex; gap: 5px; padding: 10px 14px; border-bottom: 1px solid #eaecf0; flex-shrink: 0; flex-wrap: wrap; }
+.mode-btn {
+  display: inline-flex; align-items: center; gap: 5px;
+  padding: 5px 10px; font-size: 12px; font-weight: 600;
+  font-family: inherit; border: 1px solid #d0d5dd; border-radius: 5px;
+  background: #fff; color: #4a5568; cursor: pointer;
 }
+.mode-btn:hover { background: #f4f6f8; }
+.mode-btn.mode-on   { background: #2f3e4d; border-color: #2f3e4d; color: #fff; }
+.mode-btn.mode-open { margin-left: auto; background: #2a7a52; border-color: #2a7a52; color: #fff; }
+.mode-btn:disabled  { opacity: 0.6; cursor: not-allowed; }
 
-.pa-btn {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  padding: 6px 12px;
-  font-size: 12px;
-  font-weight: 600;
-  font-family: inherit;
-  border: 1px solid #d0d5dd;
-  border-radius: 5px;
-  background: #fff;
-  color: #4a5568;
-  cursor: pointer;
+.dp-body { flex: 1; overflow-y: auto; padding: 14px; display: flex; flex-direction: column; gap: 8px; }
+.dp-field {
+  display: flex; flex-direction: column; gap: 4px;
+  background: #f8fafc; border: 1px solid #e0e4ea; border-radius: 7px; padding: 9px 12px;
 }
+.dp-lbl { font-size: 10.5px; font-weight: 700; color: #8a95a4; text-transform: uppercase; letter-spacing: 0.05em; }
+.dp-val { font-size: 13px; color: #1e2a36; font-weight: 600; }
+.dp-proc-chips { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 5px; }
 
-.pa-btn:hover { background: #f4f6f8; }
-.pa-btn.pa-active { background: #2f3e4d; border-color: #2f3e4d; color: #fff; }
-.pa-btn.pa-open { margin-left: auto; background: #2a7a52; border-color: #2a7a52; color: #fff; }
-.pa-btn:disabled { opacity: 0.6; cursor: not-allowed; }
-
-.panel-content {
-  flex: 1;
-  overflow-y: auto;
-  padding: 14px 16px;
-}
-
-.summary-grid {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 10px;
-}
-
-.summary-item {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  background: #f8fafc;
-  border: 1px solid #e0e4ea;
-  border-radius: 8px;
-  padding: 10px;
-}
-
-.summary-item.full { grid-column: 1 / -1; }
-
-.summary-label {
-  font-size: 11px;
-  font-weight: 700;
-  color: #8a95a4;
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
-}
-
-.summary-value {
-  font-size: 13px;
-  color: #1e2a36;
-  font-weight: 600;
-}
-
-.summary-note {
-  margin-top: 14px;
-  border-radius: 8px;
-  border: 1px solid #d0e3f9;
-  background: #eff6ff;
-  color: #1e3a5f;
-  padding: 10px 12px;
-  font-size: 12.5px;
-  line-height: 1.45;
-}
-
+/* ── Status Bar ────────────────────────────────────────────────────────────── */
 .status-bar {
-  display: flex;
-  justify-content: space-between;
-  padding: 5px 14px;
-  background: #e8ebef;
-  border-top: 1px solid #d0d5dd;
-  font-size: 11.5px;
-  color: #7a8694;
-  flex-shrink: 0;
+  display: flex; justify-content: space-between;
+  padding: 5px 16px; background: #e8ebef;
+  border-top: 1px solid #d0d5dd; font-size: 11.5px; color: #7a8694; flex-shrink: 0;
 }
 
-.file-area::-webkit-scrollbar,
-.panel-content::-webkit-scrollbar { width: 6px; }
-
-.file-area::-webkit-scrollbar-track,
-.panel-content::-webkit-scrollbar-track { background: transparent; }
-
-.file-area::-webkit-scrollbar-thumb,
-.panel-content::-webkit-scrollbar-thumb { background: #c8cdd5; border-radius: 3px; }
+/* ── Scrollbars ────────────────────────────────────────────────────────────── */
+.file-area::-webkit-scrollbar, .dp-body::-webkit-scrollbar { width: 5px; }
+.file-area::-webkit-scrollbar-track, .dp-body::-webkit-scrollbar-track { background: transparent; }
+.file-area::-webkit-scrollbar-thumb, .dp-body::-webkit-scrollbar-thumb { background: #c8cdd5; border-radius: 3px; }
 </style>

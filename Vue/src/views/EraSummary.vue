@@ -3,6 +3,7 @@ import { computed, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import api from '../services/api'
 import { markStepCompleted, resetEraProgress, setCurrentAssessmentId } from '../services/eraProgress'
+import { getBossGroupId, clearBossGroupId } from '../services/bossData'
 
 const route = useRoute()
 const router = useRouter()
@@ -15,6 +16,7 @@ const savingAll = ref(false)
 const saveFeedback = ref('')
 const tasks = ref([])
 const summaryRows = ref([])
+const factorRemarks = ref({})
 
 const FACTOR_CONFIG = [
   { key: 'awkward_posture', label: 'Awkward Posture', totalScore: 13, threshold: 6, painEnabled: true },
@@ -174,9 +176,46 @@ const buildSummary = (payload) => {
   }
 
   const forcefulManualRows = Array.isArray(forceful.manual_summary?.rows) ? forceful.manual_summary.rows : []
+  const forcefulLiftingRows = Array.isArray(forceful.rows) ? forceful.rows : []
+  const forcefulCarryingRows = Array.isArray(forceful.carrying_summary?.rows) ? forceful.carrying_summary.rows : []
+  const forcefulPushPullActivities = Array.isArray(forceful.push_pull?.activities) ? forceful.push_pull.activities : []
   const repetitiveRows = Array.isArray(repetitive.rows) ? repetitive.rows : []
   const vibrationRows = Array.isArray(vibration.rows) ? vibration.rows : []
   const environmentalRows = Array.isArray(environmental.rows) ? environmental.rows : []
+
+  // ── "Other" Yes override helpers ─────────────────────────────────────────
+  // Returns true if an "Other" item in the given checklist itemMap has Yes for taskId
+  const otherChecklistYes = (taskId, itemMap) => {
+    for (const [itemId, item] of itemMap) {
+      if (String(item.body_part || '').toLowerCase() === 'other' ||
+          String(item.description || '').toLowerCase() === 'other') {
+        if (answerMap.get(`${Number(taskId)}_${itemId}`)) return true
+      }
+    }
+    return false
+  }
+
+  // Returns true if a row with the given key in a `responses`-keyed array has Yes for taskId
+  const otherResponseYes = (rows, taskId, key) => {
+    const row = rows.find(r => r.key === key)
+    if (!row) return false
+    return yesValue(responseForTask(row.responses, taskId))
+  }
+
+  // Returns true if a row with the given key in the lifting (`answers`-keyed) array has Yes for taskId
+  const otherLiftingYes = (rows, taskId, key) => {
+    const row = rows.find(r => r.key === key)
+    if (!row || !Array.isArray(row.answers)) return false
+    const ans = row.answers.find(a => Number(a.task_id) === Number(taskId))
+    return ans ? (toBool(ans.answer) && !toBool(ans.not_applicable)) : false
+  }
+
+  // Returns true if push/pull activity with given key has Yes for taskId
+  const otherPushPullYes = (activities, taskId, key) => {
+    const act = activities.find(a => a.key === key)
+    if (!act) return false
+    return yesValue(responseForTask(act.responses, taskId))
+  }
 
   const rows = FACTOR_CONFIG.map(factor => {
     const taskResults = tasks.value.map(task => {
@@ -233,7 +272,27 @@ const buildSummary = (payload) => {
 
       const scoreTrigger = Number(score) >= Number(factor.threshold)
       const painTrigger = factor.painEnabled && painParts.length > 0
-      const needAdvanced = scoreTrigger
+
+      // "Other" row override: force needAdvanced even if score < threshold
+      let otherOverride = false
+      if (factor.key === 'awkward_posture') {
+        otherOverride = otherChecklistYes(taskId, awkwardItemMap)
+      } else if (factor.key === 'static_sustained') {
+        otherOverride = otherChecklistYes(taskId, staticItemMap)
+      } else if (factor.key === 'forceful_exertion') {
+        otherOverride = otherResponseYes(forcefulManualRows, taskId, 'other_forceful_activity') ||
+                        otherResponseYes(forcefulCarryingRows, taskId, 'other_carrying') ||
+                        otherLiftingYes(forcefulLiftingRows, taskId, 'other_working_height') ||
+                        otherPushPullYes(forcefulPushPullActivities, taskId, 'other_push_pull')
+      } else if (factor.key === 'repetition') {
+        otherOverride = otherResponseYes(repetitiveRows, taskId, 'other_repetition')
+      } else if (factor.key === 'vibration') {
+        otherOverride = otherResponseYes(vibrationRows, taskId, 'other_vibration')
+      } else if (['lighting', 'temperature', 'ventilation', 'noise'].includes(factor.key)) {
+        otherOverride = otherResponseYes(environmentalRows, taskId, 'other_environmental')
+      }
+
+      const needAdvanced = scoreTrigger || otherOverride
 
       return {
         taskId,
@@ -278,7 +337,14 @@ const load = async () => {
 
   try {
     setCurrentAssessmentId(assessmentId)
-    const [checklist, forceful, repetitive, vibration, environmental, summaryPain] = await Promise.all([
+
+    // Include the client-side group ID as a fallback so the backend can resolve
+    // body parts even when the ERA assessment row was created without a boss_group_id FK
+    // (e.g. after a page reset or a session that predates group-linking).
+    const storedGroupId = getBossGroupId()
+    const bossQuery = storedGroupId ? `?boss_group_id=${storedGroupId}` : ''
+
+    const [checklist, forceful, repetitive, vibration, environmental, summaryPain, bossData, factorRemarksData] = await Promise.all([
       api.get(`/era-checklist/${assessmentId}`),
       getWithFallbackOn422(`/era-forceful-exertion/${assessmentId}`, {
         rows: [],
@@ -290,10 +356,19 @@ const load = async () => {
       getWithFallbackOn422(`/era-vibration/${assessmentId}`, { rows: [], task_not_applicable: {} }),
       getWithFallbackOn422(`/era-environmental-factors/${assessmentId}`, { rows: [], task_not_applicable: {} }),
       api.get(`/era-summary-pain-parts/${assessmentId}`).catch(() => ({ data: { has_saved: false, pain_parts: {} } })),
+      api.get(`/boss-questionnaires/by-assessment/${assessmentId}${bossQuery}`).catch(() => ({ data: { boss_id: null, selected_body_parts: [] } })),
+      api.get(`/era-summary-factor-remarks/${assessmentId}`).catch(() => ({ data: { remarks: {} } })),
     ])
 
     buildSummary({ checklist, forceful, repetitive, vibration, environmental })
-    initializePainSelections(summaryPain.data?.pain_parts ?? {}, Boolean(summaryPain.data?.has_saved))
+    factorRemarks.value = factorRemarksData.data?.remarks ?? {}
+    initializePainSelections(
+      summaryPain.data?.pain_parts         ?? {},
+      Boolean(summaryPain.data?.has_saved),
+      bossData.data?.selected_body_parts   ?? [],   // flat union — used as fallback
+      bossData.data?.task_body_parts       ?? {},   // per-task map — authoritative when present
+      bossData.data?.no_match_task_ids     ?? []    // tasks with no BOSS match
+    )
   } catch (error) {
     console.error(error.response?.data || error)
     errorMessage.value = 'Unable to load the Initial ERA Summary. Please try again.'
@@ -305,16 +380,29 @@ const load = async () => {
 const resetAssessment = async () => {
   if (resetting.value) return
 
-  const confirmed = window.confirm('Start a new ERA assessment? This will reset all step progress ticks and return to Step 1.')
+  const confirmed = window.confirm(
+    'Start a new assessment?\n\n' +
+    'This will:\n' +
+    '  • Clear all ERA step progress\n' +
+    '  • Remove the current BOSS group link\n' +
+    '  • Redirect you to the BOSS Questionnaire to begin a fresh session'
+  )
   if (!confirmed) return
 
   resetting.value = true
 
   try {
-    // Avoid emitting progress event before route changes so Sidebar
-    // does not immediately re-bind the current route assessment ID.
+    // Clear ERA progress (also clears boss_questionnaire_id via resetEraProgress).
+    // Emit is suppressed until after navigation so the Sidebar does not
+    // try to re-bind the current route assessment ID during the transition.
     resetEraProgress(assessmentId, { emitEvent: false })
-    await router.push('/era-form')
+
+    // Clear the BOSS group so the next BOSS session creates a brand-new group
+    // instead of appending to the one that belonged to this assessment.
+    clearBossGroupId()
+
+    // Return the user to the BOSS Questionnaire to begin a completely fresh session.
+    await router.push('/boss-questionnaire')
   } finally {
     resetting.value = false
   }
@@ -368,7 +456,16 @@ const derivedTaskPainPartLookup = computed(() => {
 
 const taskPainSelections = ref({})
 
-const initializePainSelections = (savedPainPartsByTask = {}, hasSaved = false) => {
+const initializePainSelections = (
+  savedPainPartsByTask = {},
+  hasSaved             = false,
+  bossBodyParts        = [],   // flat union across all BOSS records — used as last-resort fallback
+  taskBodyParts        = {},   // per-task map: { era_task_id: [body_parts] }  ← authoritative
+  noMatchTaskIds       = []    // task IDs that had no matching BOSS record
+) => {
+  const noMatchSet = new Set(noMatchTaskIds.map(String))
+  const hasPerTaskMap = Object.keys(taskBodyParts).length > 0
+
   const out = {}
 
   tasks.value.forEach(task => {
@@ -380,9 +477,30 @@ const initializePainSelections = (savedPainPartsByTask = {}, hasSaved = false) =
     })
 
     const savedPartsRaw = Array.isArray(savedPainPartsByTask?.[taskKey]) ? savedPainPartsByTask[taskKey] : []
-    const sourceParts = hasSaved
-      ? savedPartsRaw
-      : Array.from(derivedTaskPainPartLookup.value?.[taskKey] ?? [])
+
+    let sourceParts
+    if (hasSaved) {
+      // User has explicitly saved Step 7 — honour their choices.
+      sourceParts = savedPartsRaw
+
+    } else if (hasPerTaskMap && !noMatchSet.has(taskKey)) {
+      // Per-task map available AND this task was matched to a BOSS record.
+      // Use exactly what that worker reported — an empty array here means
+      // they completed the BOSS for this task and reported no affected regions,
+      // so the column should be blank (not filled from the flat union).
+      sourceParts = (taskBodyParts[taskKey] ?? []).map(normalizePainPartKey)
+
+    } else if (bossBodyParts.length > 0) {
+      // Either no per-task map yet (legacy single-questionnaire data),
+      // or this ERA task had no matching BOSS record (user may have renamed it).
+      // Fall back to the flat union of all BOSS body parts.
+      sourceParts = bossBodyParts.map(normalizePainPartKey)
+
+    } else {
+      // No BOSS data at all — seed from derived checklist answers so the column
+      // is not entirely empty when the user hasn't linked a BOSS questionnaire.
+      sourceParts = Array.from(derivedTaskPainPartLookup.value?.[taskKey] ?? [])
+    }
 
     sourceParts.forEach(part => {
       const key = normalizePainPartKey(part)
@@ -446,10 +564,16 @@ const saveAllChanged = async () => {
   saveFeedback.value = ''
 
   try {
-    await api.post('/era-summary-pain-parts', {
-      assessment_id: assessmentId,
-      pain_parts: buildPainPartsPayload(),
-    })
+    await Promise.all([
+      api.post('/era-summary-pain-parts', {
+        assessment_id: assessmentId,
+        pain_parts: buildPainPartsPayload(),
+      }),
+      api.post('/era-summary-factor-remarks', {
+        assessment_id: assessmentId,
+        remarks: factorRemarks.value,
+      }),
+    ])
 
     markStepCompleted(assessmentId, 7)
     await load()
@@ -506,6 +630,7 @@ onMounted(() => {
                   <template v-for="(task, taskIndex) in group.tasks" :key="`task-head-${group.index}-${task.id}`">
                     <th colspan="3" :class="headerClassForTask((group.start - 1) + taskIndex)">{{ task.title }}</th>
                   </template>
+                  <th rowspan="3" class="col-remarks-head">Remarks</th>
                 </tr>
                 <tr>
                   <th class="letter-head">A</th>
@@ -581,6 +706,7 @@ onMounted(() => {
                       </span>
                     </td>
                   </template>
+                  <td class="remarks-cell"><input v-model="factorRemarks[row.key]" class="remarks-input" /></td>
                 </tr>
               </tbody>
             </table>
@@ -606,7 +732,7 @@ onMounted(() => {
 .loading-state { padding: 40px; text-align: center; }
 
 .summary-wrapper {
-  font-family: DM Sans, Arial, sans-serif;
+  font-family: Arial, sans-serif;
   display: flex;
   flex-direction: column;
   gap: 16px;
@@ -714,6 +840,18 @@ onMounted(() => {
 .col-risk { width: 150px; }
 .col-total { width: 80px; }
 .col-threshold { width: 110px; }
+.col-remarks-head { width: 130px; background: #2f3e4d !important; color: #fff; text-align: center; vertical-align: middle; }
+
+.remarks-cell { width: 130px; vertical-align: middle; }
+.remarks-input {
+  width: 100%;
+  border: 1px solid #bbb;
+  border-radius: 3px;
+  padding: 4px 6px;
+  font-size: 12px;
+  font-family: inherit;
+  box-sizing: border-box;
+}
 
 .risk-name { font-weight: 700; }
 .total-cell { text-align: center; font-weight: 700; }
@@ -835,7 +973,7 @@ onMounted(() => {
   border: 1.5px solid transparent;
   font-size: 14px;
   font-weight: 700;
-  font-family: 'Sora', 'DM Sans', Arial, sans-serif;
+  font-family: Arial, sans-serif;
   letter-spacing: 0.02em;
   cursor: pointer;
   transition: all 0.2s;

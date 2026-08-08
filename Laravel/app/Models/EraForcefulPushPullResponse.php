@@ -12,6 +12,7 @@ class EraForcefulPushPullResponse extends Model
         'activity_key',
         'answer',
         'not_applicable',
+        'remarks',
     ];
 
     protected $casts = [

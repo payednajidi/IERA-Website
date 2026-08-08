@@ -1,13 +1,24 @@
 <?php
 
 use Illuminate\Support\Facades\Route;
+use App\Http\Controllers\BossGroupController;
+use App\Http\Controllers\BossQuestionnaireController;
 use App\Http\Controllers\EraAssessmentController;
 use App\Http\Controllers\EraChecklistController;
 use App\Http\Controllers\EraEnvironmentalFactorController;
 use App\Http\Controllers\EraForcefulExertionController;
 use App\Http\Controllers\EraRepetitiveMotionController;
+use App\Http\Controllers\EraResultDescriptionController;
 use App\Http\Controllers\EraSummaryController;
 use App\Http\Controllers\EraVibrationController;
+
+// BOSS routes — by-assessment must be declared before {id} wildcard
+Route::post('/boss-questionnaires', [BossQuestionnaireController::class, 'store']);
+Route::get('/boss-questionnaires/by-assessment/{assessmentId}', [BossQuestionnaireController::class, 'showByAssessment']);
+Route::get('/boss-questionnaires/{id}', [BossQuestionnaireController::class, 'show']);
+
+// BOSS group route — returns group with all linked questionnaires and aggregated body parts
+Route::get('/boss-groups/{id}', [BossGroupController::class, 'show']);
 
 Route::get('/era-assessments', [EraAssessmentController::class, 'index']);
 Route::get('/era-assessments/{assessmentId}', [EraAssessmentController::class, 'show']);
@@ -25,3 +36,10 @@ Route::get('/era-environmental-factors/{assessmentId}', [EraEnvironmentalFactorC
 Route::post('/era-environmental-factors', [EraEnvironmentalFactorController::class, 'store']);
 Route::get('/era-summary-pain-parts/{assessmentId}', [EraSummaryController::class, 'showPainParts']);
 Route::post('/era-summary-pain-parts', [EraSummaryController::class, 'savePainParts']);
+Route::get('/era-summary-factor-remarks/{assessmentId}', [EraSummaryController::class, 'showFactorRemarks']);
+Route::post('/era-summary-factor-remarks', [EraSummaryController::class, 'saveFactorRemarks']);
+
+// Result description overrides (Table 4.3+ custom bullets)
+Route::get('/era-result-descriptions/{assessmentId}', [EraResultDescriptionController::class, 'index']);
+Route::post('/era-result-descriptions', [EraResultDescriptionController::class, 'store']);
+Route::delete('/era-result-descriptions/{assessmentId}/{taskId}/{riskFactorKey}', [EraResultDescriptionController::class, 'destroy']);

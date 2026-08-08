@@ -1,5 +1,6 @@
 const STORAGE_KEY = 'era_step_progress'
 const CURRENT_ASSESSMENT_KEY = 'era_assessment_id'
+const BOSS_ID_KEY = 'boss_questionnaire_id'
 
 const STEP_KEYS = ['step1', 'step2', 'step3', 'step4', 'step5', 'step6', 'step7']
 
@@ -89,12 +90,22 @@ export const resetAssessmentProgress = (assessmentId, { emitEvent = true } = {})
   }
 }
 
+export const getBossQuestionnaireId = () => localStorage.getItem(BOSS_ID_KEY) ?? ''
+
+export const setBossQuestionnaireId = id => {
+  if (!id) return
+  localStorage.setItem(BOSS_ID_KEY, String(id))
+  window.dispatchEvent(new Event('era-progress-updated'))
+}
+
+export const clearBossQuestionnaireId = () => {
+  localStorage.removeItem(BOSS_ID_KEY)
+}
+
 export const resetEraProgress = (assessmentId = '', { emitEvent = true } = {}) => {
   resetStoredProgress(assessmentId)
-
-  // Start a new assessment session without deleting saved progress history
-  // for previous assessment IDs.
   clearCurrentAssessmentId()
+  clearBossQuestionnaireId()
   if (emitEvent) {
     window.dispatchEvent(new Event('era-progress-updated'))
   }

@@ -73,10 +73,6 @@ const handleProgressUpdated = () => {
   bossCompleted.value = Boolean(getBossQuestionnaireId())
 }
 
-const resetBossCompleted = () => {
-  clearBossQuestionnaireId()
-  bossCompleted.value = false
-}
 
 onMounted(() => {
   refreshLinks()
@@ -106,20 +102,11 @@ watch(
     <nav>
       <RouterLink to="/boss-questionnaire" class="nav-item" :class="{ 'nav-boss-active': isBossRoute }">
         <span>BOSS Questionnaire</span>
-        <span class="boss-status-group">
-          <span v-if="bossCompleted" class="step-check" aria-label="Completed">&#10003;</span>
-          <button
-            v-if="bossCompleted"
-            type="button"
-            class="boss-reset-btn"
-            title="Reset BOSS completion status"
-            @click.prevent="resetBossCompleted"
-          >&#x21BA;</button>
-        </span>
+        <span v-if="bossCompleted" class="step-check" aria-label="Completed">&#10003;</span>
       </RouterLink>
 
       <button type="button" class="nav-item nav-parent" :class="{ 'nav-parent-active': isEraRoute }" @click="isMenuOpen = !isMenuOpen">
-        <span>ERA Assessment</span>
+        <span>Initial ERA Assessment</span>
         <span class="dropdown-icon">{{ isMenuOpen ? '▾' : '▸' }}</span>
       </button>
 
@@ -130,7 +117,7 @@ watch(
         </RouterLink>
 
         <RouterLink :to="checklistLink" class="nav-item nav-sub-item">
-          <span>Step 2: Ergonomic Risk Factor</span>
+          <span>Step 2: Posture</span>
           <span v-if="stepCompleted(2)" class="step-check" aria-label="Step completed">&#10003;</span>
         </RouterLink>
 
@@ -162,6 +149,10 @@ watch(
 
       <RouterLink to="/era-assessment-files" class="nav-item">
         Era Assessment File (Edit/Preview)
+      </RouterLink>
+
+      <RouterLink to="/method" class="nav-item">
+        METHOD &amp; RESULT
       </RouterLink>
 
       <div class="nav-note">
@@ -276,32 +267,6 @@ nav {
   font-weight: 700;
 }
 
-.boss-status-group {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-}
 
-.boss-reset-btn {
-  background: none;
-  border: 1px solid rgba(255,255,255,0.25);
-  border-radius: 999px;
-  color: rgba(255,255,255,0.55);
-  font-size: 13px;
-  line-height: 1;
-  width: 18px;
-  height: 18px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  cursor: pointer;
-  padding: 0;
-  transition: all 0.15s;
-}
-.boss-reset-btn:hover {
-  background: rgba(192,57,43,0.3);
-  border-color: #e07070;
-  color: #ff9999;
-}
 </style>
 

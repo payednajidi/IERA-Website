@@ -20,6 +20,7 @@ const rowTemplate = [
   { key: 'inadequate_air_ventilation', physical_risk_factor: 'Inadequate air ventilation or poor IAQ' },
   { key: 'noise_above_pel', physical_risk_factor: 'Noise exposure above PEL' },
   { key: 'annoying_noise_more_than_8_hours', physical_risk_factor: 'Exposed to annoying noise more than 8 hours' },
+  { key: 'other_environmental', physical_risk_factor: 'Other' },
 ]
 
 const defaultRows = () => {
@@ -253,7 +254,7 @@ onMounted(() => {
 
 <style scoped>
 .loading-state { padding: 40px; text-align: center; }
-.page-wrapper { font-family: DM Sans, Arial, sans-serif; display: flex; flex-direction: column; gap: 16px; }
+.page-wrapper { font-family: Arial, sans-serif; display: flex; flex-direction: column; gap: 16px; }
 .page-hero { display: flex; align-items: flex-start; justify-content: space-between; gap: 20px; padding: 22px 24px; background: linear-gradient(135deg, #0b1a2a 0%, #17324f 58%, #224f7a 100%); border-radius: 10px; }
 .hero-left { display: flex; flex-direction: column; gap: 6px; }
 .hero-tag { width: fit-content; padding: 4px 10px; border-radius: 999px; font-size: 11px; font-weight: 700; letter-spacing: 0.05em; color: #e8a020; background: rgba(232,160,32,0.25); border: 1px solid rgba(232,160,32,0.55); text-transform: uppercase; }
@@ -288,7 +289,7 @@ onMounted(() => {
   border: 1.5px solid transparent;
   font-size: 14px;
   font-weight: 700;
-  font-family: 'Sora', 'DM Sans', Arial, sans-serif;
+  font-family: Arial, sans-serif;
   letter-spacing: 0.02em;
   cursor: pointer;
   transition: all 0.2s;

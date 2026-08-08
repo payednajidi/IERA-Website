@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers;
 
+use App\Models\BossGroup;
 use App\Models\EraAssessment;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -12,18 +13,33 @@ class EraAssessmentController extends Controller
     public function index()
     {
         $assessments = EraAssessment::query()
+            ->withCount('processes')
+            ->with(['processes:id,assessment_id,name'])
             ->orderByDesc('created_at')
             ->get([
                 'id',
                 'assessor_name',
                 'assessment_date',
                 'department',
+                'working_hours',
+                'breaks',
                 'created_at',
                 'updated_at',
             ]);
 
         return response()->json([
-            'assessments' => $assessments,
+            'assessments' => $assessments->map(fn ($a) => [
+                'id'              => (int) $a->id,
+                'assessor_name'   => $a->assessor_name,
+                'assessment_date' => $a->assessment_date,
+                'department'      => $a->department,
+                'working_hours'   => $a->working_hours,
+                'breaks'          => $a->breaks,
+                'processes_count' => (int) $a->processes_count,
+                'process_names'   => $a->processes->pluck('name')->filter()->values()->all(),
+                'created_at'      => $a->created_at,
+                'updated_at'      => $a->updated_at,
+            ]),
         ]);
     }
 
@@ -209,12 +225,21 @@ class EraAssessmentController extends Controller
         DB::beginTransaction();
 
         try {
+            $bossId      = $request->input('boss_questionnaire_id');
+            $bossGroupId = $request->input('boss_group_id');
+
             $assessment = EraAssessment::create([
-                'assessor_name' => $request->assessor_name,
-                'assessment_date' => $request->assessment_date,
-                'department' => $request->department,
-                'working_hours' => $request->working_hours,
-                'breaks' => $request->breaks,
+                'assessor_name'         => $request->assessor_name,
+                'assessment_date'       => $request->assessment_date,
+                'department'            => $request->department,
+                'working_hours'         => $request->working_hours,
+                'breaks'                => $request->breaks,
+                'boss_questionnaire_id' => ($bossId && \App\Models\BossQuestionnaire::where('id', $bossId)->exists())
+                    ? $bossId
+                    : null,
+                'boss_group_id'         => ($bossGroupId && \App\Models\BossGroup::where('id', $bossGroupId)->exists())
+                    ? $bossGroupId
+                    : null,
             ]);
 
             $createdTasks = [];

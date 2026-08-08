@@ -12,7 +12,19 @@ class EraAssessment extends Model
         'department',
         'working_hours',
         'breaks',
+        'boss_questionnaire_id',
+        'boss_group_id',
     ];
+
+    public function bossQuestionnaire()
+    {
+        return $this->belongsTo(BossQuestionnaire::class, 'boss_questionnaire_id');
+    }
+
+    public function bossGroup()
+    {
+        return $this->belongsTo(BossGroup::class, 'boss_group_id');
+    }
 
     /**
      * An assessment has many processes

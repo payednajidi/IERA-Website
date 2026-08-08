@@ -1,6 +1,7 @@
 import { createRouter, createWebHistory } from 'vue-router'
 
 import DashboardLayout from '../layouts/DashboardLayout.vue'
+import BossQuestionnaire from '../views/BossQuestionnaire.vue'
 import EraForm from '../views/EraForm.vue'
 import EraChecklist from '../views/EraChecklist.vue'
 import EraForcefulExertion from '../views/EraForcefulExertion.vue'
@@ -10,6 +11,7 @@ import EraEnvironmentalFactors from '../views/EraEnvironmentalFactors.vue'
 import EraSummary from '../views/EraSummary.vue'
 import EraAssessmentFileEditPreview from '../views/EraAssessmentFileEditPreview.vue'
 import EraAssessmentTotalInformation from '../views/EraAssessmentTotalInformation.vue'
+import MethodPage from '../views/MethodPage.vue'
 
 const routes = [
 
@@ -19,7 +21,19 @@ component:DashboardLayout,
 children:[
 
 {
+path:'boss-questionnaire',
+component:BossQuestionnaire
+},
+
+{
 path:'era-form',
+component:EraForm
+},
+
+// Direct link to ERA form with a specific BOSS group pre-loaded.
+// Example: /era-form/boss-group/2
+{
+path:'era-form/boss-group/:groupId',
 component:EraForm
 },
 
@@ -56,13 +70,22 @@ component:EraSummary
 {
 path:'era-assessment-files',
 name:'era-assessment-files',
-component:EraAssessmentFileEditPreview
+component:EraAssessmentFileEditPreview,
+meta:{ fullscreen:true }
 },
 
 {
 path:'era-assessment-files/:assessmentId/total-information',
 name:'era-assessment-files-total-information',
-component:EraAssessmentTotalInformation
+component:EraAssessmentTotalInformation,
+meta:{ fullscreen:true }
+},
+
+{
+path:'method',
+name:'method',
+component:MethodPage,
+meta:{ fullscreen:true }
 }
 
 ]

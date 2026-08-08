@@ -5,6 +5,7 @@ namespace App\Http\Controllers;
 use App\Models\EraAssessment;
 use App\Models\EraChecklistForcefulExertion;
 use App\Models\EraForcefulCarryingActivityResponse;
+use App\Models\EraForcefulImageSetting;
 use App\Models\EraForcefulManualSummaryResponse;
 use App\Models\EraForcefulPushPullResponse;
 use Illuminate\Http\Request;
@@ -19,12 +20,13 @@ class EraForcefulExertionController extends Controller
             $taskIds = [];
 
             return response()->json([
-                'assessment_id' => null,
-                'rows' => $this->defaultRows($taskIds),
-                'reference_info' => $this->referenceInfoTable(),
-                'push_pull' => $this->defaultPushPullPayload($taskIds),
+                'assessment_id'   => null,
+                'rows'            => $this->defaultRows($taskIds),
+                'reference_info'  => $this->referenceInfoTable(),
+                'push_pull'       => $this->defaultPushPullPayload($taskIds),
                 'carrying_summary' => $this->defaultCarryingSummaryPayload($taskIds),
-                'manual_summary' => $this->defaultManualSummaryPayload($taskIds),
+                'manual_summary'  => $this->defaultManualSummaryPayload($taskIds),
+                'image_settings'  => $this->defaultImageSettings(),
             ]);
         }
 
@@ -48,17 +50,23 @@ class EraForcefulExertionController extends Controller
             ->whereIn('task_id', $taskIds)
             ->get();
 
+        // Derive the per-task Not Applicable flag for the lifting section so the frontend
+        // can initialise the checkbox without inspecting every individual answer row.
+        $liftingTaskNA = $this->deriveLiftingTaskNotApplicable($taskIds, $liftingRows);
+
         return response()->json([
-            'assessment_id' => $assessment->id,
-            'rows' => $liftingRows,
-            'reference_info' => $this->referenceInfoTable(),
-            'push_pull' => $pushPullResponses->isEmpty()
+            'assessment_id'    => $assessment->id,
+            'rows'             => $liftingRows,
+            'task_not_applicable' => $liftingTaskNA,
+            'image_settings'   => $this->loadImageSettings($assessment->id),
+            'reference_info'   => $this->referenceInfoTable(),
+            'push_pull'        => $pushPullResponses->isEmpty()
                 ? $this->defaultPushPullPayload($taskIds)
                 : $this->buildPushPullPayloadFromSaved($taskIds, $pushPullResponses),
             'carrying_summary' => $carryingResponses->isEmpty()
                 ? $this->defaultCarryingSummaryPayload($taskIds)
                 : $this->buildCarryingSummaryPayloadFromSaved($taskIds, $carryingResponses),
-            'manual_summary' => $manualSummaryResponses->isEmpty()
+            'manual_summary'   => $manualSummaryResponses->isEmpty()
                 ? $this->defaultManualSummaryPayload($taskIds)
                 : $this->buildManualSummaryPayloadFromSaved($taskIds, $manualSummaryResponses),
         ]);
@@ -75,15 +83,17 @@ class EraForcefulExertionController extends Controller
             'rows.*.current_weight' => 'nullable|string',
             'rows.*.remarks' => 'nullable|string',
             'rows.*.answers' => 'required|array|min:1',
-            'rows.*.answers.*.task_id' => 'required|exists:era_tasks,id',
-            'rows.*.answers.*.answer' => 'required|boolean',
+            'rows.*.answers.*.task_id'       => 'required|exists:era_tasks,id',
+            'rows.*.answers.*.answer'        => 'required|boolean',
+            'rows.*.answers.*.not_applicable' => 'nullable|boolean',
 
             'push_pull' => 'required|array',
             'push_pull.responses' => 'required|array|min:1',
-            'push_pull.responses.*.activity_key' => 'required|string|in:start_stop_load,keep_load_in_motion',
+            'push_pull.responses.*.activity_key' => 'required|string|in:start_stop_load,keep_load_in_motion,other_push_pull',
             'push_pull.responses.*.task_id' => 'required|exists:era_tasks,id',
             'push_pull.responses.*.answer' => 'required|boolean',
             'push_pull.responses.*.not_applicable' => 'required|boolean',
+            'push_pull.responses.*.remarks' => 'nullable|string',
 
             'carrying_summary' => 'required|array',
             'carrying_summary.responses' => 'required|array|min:1',
@@ -100,6 +110,11 @@ class EraForcefulExertionController extends Controller
             'manual_summary.responses.*.answer' => 'required|boolean',
             'manual_summary.responses.*.not_applicable' => 'required|boolean',
             'manual_summary.responses.*.remarks' => 'nullable|string',
+
+            // Image-level Not Applicable flags (one per reference image in Step 3)
+            'image_settings'                           => 'nullable|array',
+            'image_settings.forceful_not_applicable'   => 'nullable|boolean',
+            'image_settings.seated_not_applicable'     => 'nullable|boolean',
         ]);
 
         $assessment = EraAssessment::findOrFail($validated['assessment_id']);
@@ -165,17 +180,19 @@ class EraForcefulExertionController extends Controller
             $liftingInsertRows = [];
             foreach ($validated['rows'] as $row) {
                 foreach ($row['answers'] as $answerCell) {
+                    $notApplicable = (bool) ($answerCell['not_applicable'] ?? false);
                     $liftingInsertRows[] = [
-                        'assessment_id' => $assessment->id,
-                        'task_id' => (int) $answerCell['task_id'],
+                        'assessment_id'      => $assessment->id,
+                        'task_id'            => (int) $answerCell['task_id'],
                         'working_height_key' => $row['key'],
                         'working_height_label' => $row['working_height'],
                         'recommended_weight' => $row['recommended_weight'] ?? null,
-                        'current_weight' => $row['current_weight'] ?? null,
-                        'remarks' => $row['remarks'] ?? null,
-                        'answer' => (bool) $answerCell['answer'],
-                        'created_at' => $now,
-                        'updated_at' => $now,
+                        'current_weight'     => $row['current_weight'] ?? null,
+                        'remarks'            => $row['remarks'] ?? null,
+                        'answer'             => $notApplicable ? false : (bool) $answerCell['answer'],
+                        'not_applicable'     => $notApplicable,
+                        'created_at'         => $now,
+                        'updated_at'         => $now,
                     ];
                 }
             }
@@ -192,6 +209,7 @@ class EraForcefulExertionController extends Controller
                     'activity_key' => $row['activity_key'],
                     'answer' => (bool) $row['answer'],
                     'not_applicable' => (bool) $row['not_applicable'],
+                    'remarks' => trim((string) ($row['remarks'] ?? '')) !== '' ? trim((string) $row['remarks']) : null,
                     'created_at' => $now,
                     'updated_at' => $now,
                 ];
@@ -235,6 +253,15 @@ class EraForcefulExertionController extends Controller
             if (!empty($manualInsertRows)) {
                 EraForcefulManualSummaryResponse::insert($manualInsertRows);
             }
+
+            // Upsert the image-level Not Applicable flags
+            EraForcefulImageSetting::updateOrCreate(
+                ['assessment_id' => $assessment->id],
+                [
+                    'forceful_image_na' => (bool) ($validated['image_settings']['forceful_not_applicable'] ?? false),
+                    'seated_image_na'   => (bool) ($validated['image_settings']['seated_not_applicable']   ?? false),
+                ]
+            );
         });
 
         return response()->json([
@@ -280,8 +307,9 @@ class EraForcefulExertionController extends Controller
             $answers = collect($taskIds)->map(function ($taskId) use ($savedGroup) {
                 $saved = $savedGroup->firstWhere('task_id', (int) $taskId);
                 return [
-                    'task_id' => (int) $taskId,
-                    'answer' => $saved ? (bool) $saved->answer : false,
+                    'task_id'        => (int) $taskId,
+                    'answer'         => $saved ? (bool) $saved->answer : false,
+                    'not_applicable' => $saved ? (bool) $saved->not_applicable : false,
                 ];
             })->values()->all();
 
@@ -341,14 +369,23 @@ class EraForcefulExertionController extends Controller
                 'remarks' => '',
                 'answers' => $this->defaultAnswersByTask($taskIds),
             ],
+            [
+                'key' => 'other_working_height',
+                'working_height' => 'Other',
+                'recommended_weight' => '',
+                'current_weight' => '',
+                'remarks' => '',
+                'answers' => $this->defaultAnswersByTask($taskIds),
+            ],
         ];
     }
 
     private function defaultAnswersByTask(array $taskIds): array
     {
         return collect($taskIds)->map(fn ($taskId) => [
-            'task_id' => (int) $taskId,
-            'answer' => false,
+            'task_id'        => (int) $taskId,
+            'answer'         => false,
+            'not_applicable' => false,
         ])->values()->all();
     }
 
@@ -377,6 +414,7 @@ class EraForcefulExertionController extends Controller
                 'activity' => $activity['activity'],
                 'male_recommended' => $activity['male_recommended'],
                 'female_recommended' => $activity['female_recommended'],
+                'remarks' => '',
                 'responses' => collect($taskIds)->map(fn ($taskId) => [
                     'task_id' => (int) $taskId,
                     'answer' => false,
@@ -405,11 +443,14 @@ class EraForcefulExertionController extends Controller
         }
 
         $formattedActivities = collect($activities)->map(function ($activity) use ($taskIds, $saved) {
+            $savedForActivity = $saved->where('activity_key', $activity['key']);
+
             return [
                 'key' => $activity['key'],
                 'activity' => $activity['activity'],
                 'male_recommended' => $activity['male_recommended'],
                 'female_recommended' => $activity['female_recommended'],
+                'remarks' => $savedForActivity->isNotEmpty() ? (string) ($savedForActivity->first()->remarks ?? '') : '',
                 'responses' => collect($taskIds)->map(function ($taskId) use ($activity, $saved) {
                     $found = $saved->first(function ($row) use ($activity, $taskId) {
                         return $row->activity_key === $activity['key'] && (int) $row->task_id === (int) $taskId;
@@ -445,6 +486,12 @@ class EraForcefulExertionController extends Controller
                 'activity' => 'Keeping the load in motion',
                 'male_recommended' => 'Approximately 100 kg load (equivalent to 100N pushing or pulling force) on uneven level surface using well maintained handling aid',
                 'female_recommended' => 'Approximately 70 kg load (equivalent to 70N pushing or pulling force) on uneven level surface using well maintained handling aid',
+            ],
+            [
+                'key' => 'other_push_pull',
+                'activity' => 'Other',
+                'male_recommended' => '',
+                'female_recommended' => '',
             ],
         ];
     }
@@ -697,5 +744,48 @@ class EraForcefulExertionController extends Controller
         return collect($taskIds)->mapWithKeys(fn ($taskId) => [
             (string) $taskId => false,
         ])->all();
+    }
+
+    /** Default image-settings payload used when no assessment ID is present. */
+    private function defaultImageSettings(): array
+    {
+        return ['forceful_not_applicable' => false, 'seated_not_applicable' => false];
+    }
+
+    /** Load image NA flags for the given assessment (returns defaults if not yet saved). */
+    private function loadImageSettings(int $assessmentId): array
+    {
+        $row = EraForcefulImageSetting::where('assessment_id', $assessmentId)->first();
+        return [
+            'forceful_not_applicable' => $row ? (bool) $row->forceful_image_na : false,
+            'seated_not_applicable'   => $row ? (bool) $row->seated_image_na   : false,
+        ];
+    }
+
+    /**
+     * Derive the per-task Not Applicable flag for the lifting/lowering section.
+     * A task is considered Not Applicable when every height row for that task
+     * has not_applicable = true (mirrors the logic used by push_pull / carrying / manual).
+     */
+    private function deriveLiftingTaskNotApplicable(array $taskIds, array $liftingRows): array
+    {
+        $result = [];
+        foreach ($taskIds as $taskId) {
+            $allNA = true;
+            $hasAnyRow = false;
+            foreach ($liftingRows as $row) {
+                foreach ($row['answers'] ?? [] as $ans) {
+                    if ((int) $ans['task_id'] === (int) $taskId) {
+                        $hasAnyRow = true;
+                        if (!($ans['not_applicable'] ?? false)) {
+                            $allNA = false;
+                            break 2;
+                        }
+                    }
+                }
+            }
+            $result[(string) $taskId] = $hasAnyRow && $allNA;
+        }
+        return $result;
     }
 }

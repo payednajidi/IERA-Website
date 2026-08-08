@@ -13,6 +13,7 @@ const savingChecklist = ref(false)
 const templates = ref([])
 const tasks = ref([])
 const answers = ref([])
+const itemRemarks = ref({})
 const currentStep = ref(1)
 
 const answerMap = computed(() => {
@@ -21,6 +22,27 @@ const answerMap = computed(() => {
     map[`${a.task_id}_${a.checklist_item_id}`] = a.answer
   })
   return map
+})
+
+const computeSpans = (items, keyFn) => {
+  const spans = new Array(items.length).fill(0)
+  let i = 0
+  while (i < items.length) {
+    const val = keyFn(items[i])
+    let j = i + 1
+    while (j < items.length && keyFn(items[j]) === val) j++
+    spans[i] = j - i
+    i = j
+  }
+  return spans
+}
+
+const templateSpans = computed(() => {
+  const out = {}
+  for (const t of templates.value) {
+    out[t.id] = computeSpans(t.items || [], item => item.body_part)
+  }
+  return out
 })
 
 const getYesCount = (taskId, template) => {
@@ -67,6 +89,8 @@ const setAnswer = (taskId, itemId, value) => {
 
   if (existingIndex !== -1) {
     answers.value[existingIndex].answer = value
+  } else {
+    answers.value.push({ assessment_id: assessmentId, task_id: taskId, checklist_item_id: itemId, answer: value })
   }
 }
 
@@ -87,6 +111,7 @@ const generateInitialAnswers = () => {
   })
 
   answers.value = generated
+  itemRemarks.value = {}
 }
 
 const loadChecklist = async () => {
@@ -98,6 +123,11 @@ const loadChecklist = async () => {
 
     if (response.data.answers && response.data.answers.length > 0) {
       answers.value = response.data.answers
+      const remarks = {}
+      response.data.answers.forEach(a => {
+        if (a.remarks) remarks[a.checklist_item_id] = a.remarks
+      })
+      itemRemarks.value = remarks
     } else {
       generateInitialAnswers()
     }
@@ -120,7 +150,10 @@ const saveChecklistAndContinue = async () => {
   try {
     await api.post('/era-checklist', {
       assessment_id: assessmentId,
-      answers: answers.value,
+      answers: answers.value.map(a => ({
+        ...a,
+        remarks: itemRemarks.value[a.checklist_item_id] ?? '',
+      })),
     })
 
     markStepCompleted(assessmentId, 2)
@@ -195,6 +228,7 @@ onMounted(() => {
               >
                 {{ task.title }}
               </th>
+              <th rowspan="2" class="col-remarks">Remarks</th>
             </tr>
 
             <tr>
@@ -214,7 +248,10 @@ onMounted(() => {
               :key="item.id"
               :class="rowIdx % 2 === 0 ? 'row-white' : 'row-gray'"
             >
-              <td>{{ item.body_part }}</td>
+              <td
+                v-if="(templateSpans[template.id] || [])[rowIdx] > 0"
+                :rowspan="(templateSpans[template.id] || [])[rowIdx] > 1 ? (templateSpans[template.id] || [])[rowIdx] : undefined"
+              >{{ item.body_part }}</td>
               <td>{{ item.description }}</td>
               <td class="td-center">{{ item.max_duration }}</td>
 
@@ -236,6 +273,7 @@ onMounted(() => {
                   />
                 </td>
               </template>
+              <td><input v-model="itemRemarks[item.id]" class="cell-input" /></td>
             </tr>
 
             <tr class="subtotal-row">
@@ -246,6 +284,7 @@ onMounted(() => {
                 <td class="subtotal-yes">{{ getYesCount(task.id, template) }}</td>
                 <td class="subtotal-no">{{ getNoCount(task.id, template) }}</td>
               </template>
+              <td></td>
             </tr>
           </tbody>
         </table>
@@ -291,7 +330,7 @@ onMounted(() => {
 }
 
 .checklist-wrapper {
-  font-family: 'DM Sans', Arial, sans-serif;
+  font-family: Arial, sans-serif;
   font-size: 13px;
   color: #111;
   display: flex;
@@ -423,6 +462,17 @@ onMounted(() => {
 .col-risk { width: 220px; }
 .col-duration { width: 120px; }
 .col-task { width: 110px; text-align: center; }
+.col-remarks { width: 140px; }
+
+.cell-input {
+  width: 100%;
+  border: 1px solid #ccc;
+  border-radius: 3px;
+  padding: 4px 6px;
+  font-size: 12px;
+  font-family: inherit;
+  box-sizing: border-box;
+}
 
 .td-center { text-align: center; }
 .td-radio { text-align: center; }
@@ -462,7 +512,7 @@ onMounted(() => {
   padding: 12px 24px;
   font-size: 14px;
   font-weight: 700;
-  font-family: 'Sora', 'DM Sans', Arial, sans-serif;
+  font-family: Arial, sans-serif;
   letter-spacing: 0.02em;
   border-radius: 6px;
   cursor: pointer;

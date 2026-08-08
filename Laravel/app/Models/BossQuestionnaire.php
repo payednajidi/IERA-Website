@@ -28,7 +28,8 @@ class BossQuestionnaire extends Model
     ];
 
     protected $fillable = [
-        'name', 'staff_id', 'date', 'date_start', 'date_end', 'department', 'company', 'process', 'job_task',
+        'boss_group_id',
+        'name', 'staff_id', 'date_start', 'date_end', 'department', 'company', 'process', 'job_task',
         'neck_selected', 'neck_due_to_work', 'neck_responses',
         'shoulder_selected', 'shoulder_due_to_work', 'shoulder_responses',
         'upper_back_selected', 'upper_back_due_to_work', 'upper_back_responses',
@@ -44,7 +45,6 @@ class BossQuestionnaire extends Model
     ];
 
     protected $casts = [
-        'date'       => 'date',
         'date_start' => 'date',
         'date_end'   => 'date',
         'neck_selected' => 'boolean',
@@ -84,6 +84,11 @@ class BossQuestionnaire extends Model
         'ankle_foot_due_to_work' => 'boolean',
         'ankle_foot_responses' => 'array',
     ];
+
+    public function bossGroup()
+    {
+        return $this->belongsTo(BossGroup::class, 'boss_group_id');
+    }
 
     public function eraAssessments()
     {

@@ -3,6 +3,7 @@
 namespace App\Http\Controllers;
 
 use App\Models\EraAssessment;
+use App\Models\EraSummaryFactorRemark;
 use App\Models\EraSummaryPainPart;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -121,6 +122,52 @@ class EraSummaryController extends Controller
             'has_saved' => $savedRows->isNotEmpty(),
             'pain_parts' => $painParts,
         ]);
+    }
+
+    public function showFactorRemarks(int $assessmentId)
+    {
+        $rows = EraSummaryFactorRemark::where('assessment_id', $assessmentId)->get(['factor_key', 'remarks']);
+
+        $remarks = [];
+        foreach ($rows as $row) {
+            $remarks[$row->factor_key] = $row->remarks;
+        }
+
+        return response()->json([
+            'assessment_id' => $assessmentId,
+            'remarks' => $remarks,
+        ]);
+    }
+
+    public function saveFactorRemarks(Request $request)
+    {
+        $validated = $request->validate([
+            'assessment_id' => 'required|exists:era_assessments,id',
+            'remarks'       => 'required|array',
+            'remarks.*'     => 'nullable|string',
+        ]);
+
+        DB::transaction(function () use ($validated) {
+            foreach ($validated['remarks'] as $factorKey => $remarks) {
+                $trimmed = trim((string) ($remarks ?? ''));
+                if ($trimmed === '') {
+                    EraSummaryFactorRemark::where([
+                        'assessment_id' => $validated['assessment_id'],
+                        'factor_key'    => $factorKey,
+                    ])->delete();
+                } else {
+                    EraSummaryFactorRemark::updateOrCreate(
+                        [
+                            'assessment_id' => $validated['assessment_id'],
+                            'factor_key'    => $factorKey,
+                        ],
+                        ['remarks' => $trimmed]
+                    );
+                }
+            }
+        });
+
+        return response()->json(['message' => 'Factor remarks saved successfully.']);
     }
 
     private function normalizeBodyPart(string $value): string

@@ -207,6 +207,44 @@ const answerMap = computed(() => {
   return out
 })
 
+// ── Row-span grouping ──────────────────────────────────────────────────────
+// Returns an array parallel to `items`: span > 0 means render the cell with
+// that rowspan; span === 0 means the cell is absorbed by the previous group.
+const computeSpans = (items, keyFn) => {
+  const spans = new Array(items.length).fill(0)
+  let i = 0
+  while (i < items.length) {
+    const val = keyFn(items[i])
+    let j = i + 1
+    while (j < items.length && keyFn(items[j]) === val) j++
+    spans[i] = j - i
+    i = j
+  }
+  return spans
+}
+
+// Step 2: spans per template (keyed by template.id)
+const step2TemplateSpans = computed(() => {
+  const out = {}
+  for (const t of step2.value.templates) {
+    out[t.id] = computeSpans(t.items || [], item => item.body_part)
+  }
+  return out
+})
+
+// Step 3 carrying summary: first column is "Factor"
+const step3CarryingSpans = computed(() =>
+  computeSpans(step3.value.carrying_summary.rows || [], row => row.factor)
+)
+
+// Step 4 & 5: first column is "Body Part"
+const step4Spans = computed(() =>
+  computeSpans(step4.value.rows || [], row => row.body_part)
+)
+const step5Spans = computed(() =>
+  computeSpans(step5.value.rows || [], row => row.body_part)
+)
+
 const STEP7_FACTOR_CONFIG = [
   { key: 'awkward_posture', label: 'Awkward posture', totalScore: 13, threshold: 6 },
   { key: 'static_sustained', label: 'Static and sustained work posture', totalScore: 3, threshold: 1 },
@@ -251,7 +289,7 @@ const countYesRows = (rows, taskId, allowedKeys = null) => {
 const checklistScore = (taskId, items) => {
   let score = 0
   ;(items || []).forEach(item => {
-    if (answerMap.value[`${taskId}_${item.id}`] === true) score += 1
+    if (toBool(answerMap.value[`${taskId}_${item.id}`])) score += 1
   })
   return score
 }
@@ -276,9 +314,36 @@ const step7SummaryRows = computed(() => {
   const awkwardItems = Array.isArray(awkwardTemplate?.items) ? awkwardTemplate.items : []
   const staticItems = Array.isArray(staticTemplate?.items) ? staticTemplate.items : []
   const forcefulManualRows = Array.isArray(step3.value.manual_summary?.rows) ? step3.value.manual_summary.rows : []
+  const forcefulLiftingRows = Array.isArray(step3.value.rows) ? step3.value.rows : []
+  const forcefulCarryingRows = Array.isArray(step3.value.carrying_summary?.rows) ? step3.value.carrying_summary.rows : []
+  const forcefulPushPullActivities = Array.isArray(step3.value.push_pull?.activities) ? step3.value.push_pull.activities : []
   const repetitiveRows = Array.isArray(step4.value.rows) ? step4.value.rows : []
   const vibrationRows = Array.isArray(step5.value.rows) ? step5.value.rows : []
   const environmentalRows = Array.isArray(step6.value.rows) ? step6.value.rows : []
+
+  const otherChecklistYes = (taskId, items) => {
+    for (const item of items) {
+      if (String(item.body_part || '').toLowerCase() === 'other' ||
+          String(item.description || '').toLowerCase() === 'other') {
+        if (toBool(answerMap.value[`${taskId}_${item.id}`])) return true
+      }
+    }
+    return false
+  }
+  const otherResponseYes = (rows, taskId, key) => {
+    const row = rows.find(r => r.key === key)
+    return row ? yesValue(responseForTask(row.responses, taskId)) : false
+  }
+  const otherLiftingYes = (rows, taskId, key) => {
+    const row = rows.find(r => r.key === key)
+    if (!row || !Array.isArray(row.answers)) return false
+    const ans = row.answers.find(a => Number(a.task_id) === Number(taskId))
+    return ans ? (toBool(ans.answer) && !toBool(ans.not_applicable)) : false
+  }
+  const otherPushPullYes = (activities, taskId, key) => {
+    const act = activities.find(a => a.key === key)
+    return act ? yesValue(responseForTask(act.responses, taskId)) : false
+  }
 
   return STEP7_FACTOR_CONFIG.map(factor => {
     const taskResults = tasks.value.map(task => {
@@ -310,11 +375,26 @@ const step7SummaryRows = computed(() => {
       if (factor.key === 'ventilation') score = ventilationScore
       if (factor.key === 'noise') score = noiseScore
 
+      const scoreTrigger = Number(score) >= Number(factor.threshold)
+      let otherOverride = false
+      if (factor.key === 'awkward_posture') otherOverride = otherChecklistYes(taskId, awkwardItems)
+      else if (factor.key === 'static_sustained') otherOverride = otherChecklistYes(taskId, staticItems)
+      else if (factor.key === 'forceful_exertion') {
+        otherOverride = otherResponseYes(forcefulManualRows, taskId, 'other_forceful_activity') ||
+                        otherResponseYes(forcefulCarryingRows, taskId, 'other_carrying') ||
+                        otherLiftingYes(forcefulLiftingRows, taskId, 'other_working_height') ||
+                        otherPushPullYes(forcefulPushPullActivities, taskId, 'other_push_pull')
+      } else if (factor.key === 'repetition') otherOverride = otherResponseYes(repetitiveRows, taskId, 'other_repetition')
+      else if (factor.key === 'vibration') otherOverride = otherResponseYes(vibrationRows, taskId, 'other_vibration')
+      else if (['lighting', 'temperature', 'ventilation', 'noise'].includes(factor.key)) {
+        otherOverride = otherResponseYes(environmentalRows, taskId, 'other_environmental')
+      }
+
       return {
         taskId,
         score,
         details,
-        needAdvanced: Number(score) >= Number(factor.threshold),
+        needAdvanced: scoreTrigger || otherOverride,
       }
     })
 
@@ -376,7 +456,11 @@ const normalizePainMap = (taskList, saved) => {
 const setStep2Answer = (taskId, itemId, value) => {
   if (!isEditMode.value) return
   const target = step2.value.answers.find(a => Number(a.task_id) === Number(taskId) && Number(a.checklist_item_id) === Number(itemId))
-  if (target) target.answer = value
+  if (target) {
+    target.answer = value
+  } else {
+    step2.value.answers.push({ task_id: Number(taskId), checklist_item_id: Number(itemId), answer: value })
+  }
 }
 
 const setRowAnswer = (row, taskId, value, section = null) => {
@@ -968,7 +1052,7 @@ onUnmounted(() => {
 
             <!-- Step 2 -->
             <div class="step-section">
-              <div class="step-label"><span class="step-num">2</span>Ergonomic Risk Factor</div>
+              <div class="step-label"><span class="step-num">2</span>Posture</div>
               <div v-for="template in step2.templates" :key="template.id" class="process-block">
                 <div class="process-name">{{ template.name }}</div>
                 <div class="table-wrap">
@@ -984,8 +1068,12 @@ onUnmounted(() => {
                       </tr>
                     </thead>
                     <tbody>
-                      <tr v-for="item in template.items" :key="item.id">
-                        <td>{{ item.body_part }}</td><td>{{ item.description }}</td><td>{{ item.max_duration }}</td>
+                      <tr v-for="(item, idx) in template.items" :key="item.id">
+                        <td
+                          v-if="(step2TemplateSpans[template.id] || [])[idx] > 0"
+                          :rowspan="(step2TemplateSpans[template.id] || [])[idx] > 1 ? (step2TemplateSpans[template.id] || [])[idx] : undefined"
+                          class="rowspan-cell"
+                        >{{ item.body_part }}</td><td>{{ item.description }}</td><td>{{ item.max_duration }}</td>
                         <template v-for="task in tasks" :key="`c2-${item.id}-${task.id}`">
                           <td class="tc"><input type="radio" :name="`s2-${item.id}-${task.id}`" :checked="answerMap[`${task.id}_${item.id}`] === true" :disabled="!isEditMode" @change="setStep2Answer(task.id, item.id, true)" /></td>
                           <td class="tc"><input type="radio" :name="`s2-${item.id}-${task.id}`" :checked="answerMap[`${task.id}_${item.id}`] === false" :disabled="!isEditMode" @change="setStep2Answer(task.id, item.id, false)" /></td>
@@ -1054,8 +1142,12 @@ onUnmounted(() => {
                     </tr>
                   </thead>
                   <tbody>
-                    <tr v-for="row in step3.carrying_summary.rows" :key="`car-${row.key}`">
-                      <td>{{ row.factor }}</td>
+                    <tr v-for="(row, idx) in step3.carrying_summary.rows" :key="`car-${row.key}`">
+                      <td
+                        v-if="step3CarryingSpans[idx] > 0"
+                        :rowspan="step3CarryingSpans[idx] > 1 ? step3CarryingSpans[idx] : undefined"
+                        class="rowspan-cell"
+                      >{{ row.factor }}</td>
                       <td>{{ row.condition }}</td>
                       <td>{{ row.outcome }}</td>
                       <td v-for="task in tasks" :key="`c3-car-${row.key}-${task.id}`">
@@ -1166,8 +1258,12 @@ onUnmounted(() => {
                     <tr><template v-for="task in tasks" :key="`h4s-${task.id}`"><th>Yes</th><th>No</th></template></tr>
                   </thead>
                   <tbody>
-                    <tr v-for="row in step4.rows" :key="row.key">
-                      <td>{{ row.body_part }}</td><td>{{ row.physical_risk_factor }}</td><td>{{ row.max_exposure_duration }}</td>
+                    <tr v-for="(row, idx) in step4.rows" :key="row.key">
+                      <td
+                        v-if="step4Spans[idx] > 0"
+                        :rowspan="step4Spans[idx] > 1 ? step4Spans[idx] : undefined"
+                        class="rowspan-cell"
+                      >{{ row.body_part }}</td><td>{{ row.physical_risk_factor }}</td><td>{{ row.max_exposure_duration }}</td>
                       <template v-for="task in tasks" :key="`c4-${row.key}-${task.id}`">
                         <td class="tc"><input type="radio" :name="`s4-${row.key}-${task.id}`" :checked="rowAnswer(row, task.id) === true" :disabled="!isEditMode || isTaskNA(step4, task.id)" @change="setRowAnswer(row, task.id, true, step4)" /></td>
                         <td class="tc"><input type="radio" :name="`s4-${row.key}-${task.id}`" :checked="rowAnswer(row, task.id) === false" :disabled="!isEditMode || isTaskNA(step4, task.id)" @change="setRowAnswer(row, task.id, false, step4)" /></td>
@@ -1196,8 +1292,12 @@ onUnmounted(() => {
                     <tr><template v-for="task in tasks" :key="`h5s-${task.id}`"><th>Yes</th><th>No</th></template></tr>
                   </thead>
                   <tbody>
-                    <tr v-for="row in step5.rows" :key="row.key">
-                      <td>{{ row.body_part }}</td><td>{{ row.physical_risk_factor }}</td><td>{{ row.max_exposure_duration }}</td>
+                    <tr v-for="(row, idx) in step5.rows" :key="row.key">
+                      <td
+                        v-if="step5Spans[idx] > 0"
+                        :rowspan="step5Spans[idx] > 1 ? step5Spans[idx] : undefined"
+                        class="rowspan-cell"
+                      >{{ row.body_part }}</td><td>{{ row.physical_risk_factor }}</td><td>{{ row.max_exposure_duration }}</td>
                       <template v-for="task in tasks" :key="`c5-${row.key}-${task.id}`">
                         <td class="tc"><input type="radio" :name="`s5-${row.key}-${task.id}`" :checked="rowAnswer(row, task.id) === true" :disabled="!isEditMode || isTaskNA(step5, task.id)" @change="setRowAnswer(row, task.id, true, step5)" /></td>
                         <td class="tc"><input type="radio" :name="`s5-${row.key}-${task.id}`" :checked="rowAnswer(row, task.id) === false" :disabled="!isEditMode || isTaskNA(step5, task.id)" @change="setRowAnswer(row, task.id, false, step5)" /></td>
@@ -1352,15 +1452,15 @@ onUnmounted(() => {
 * { box-sizing: border-box; }
 
 .explorer-root {
-  font-family: 'IBM Plex Sans', sans-serif;
+  font-family: Arial, sans-serif;
   display: flex;
   flex-direction: column;
-  height: calc(100vh - 120px);
+  height: 100%;
   background: #f0f2f5;
-  border-radius: 10px;
+  border-radius: 0;
   overflow: hidden;
-  border: 1px solid #d0d5dd;
-  box-shadow: 0 2px 12px rgba(0,0,0,0.08);
+  border: none;
+  box-shadow: none;
 }
 
 /* ── TOOLBAR ── */
@@ -1922,57 +2022,61 @@ onUnmounted(() => {
   background: #eff6ff;
 }
 .step1-photo-strip {
-  display: flex;
-  flex-wrap: wrap;
-  justify-content: center;
-  align-items: flex-start;
-  gap: 8px;
-  padding: 8px;
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 10px;
+  padding: 10px;
   background: #f3f4f6;
 }
-.step1-photo-link {
-  display: inline-flex;
-  align-items: flex-start;
-  justify-content: center;
-  max-width: 100%;
-  text-decoration: none;
+@media (max-width: 560px) {
+  .step1-photo-strip { grid-template-columns: 1fr; }
 }
 .step1-photo-item {
   position: relative;
-  display: inline-flex;
+  width: 100%;
 }
+/* Both the clickable link (view) and the edit wrapper share the same frame */
+.step1-photo-link,
 .step1-photo-edit-item {
-  position: relative;
-  display: inline-flex;
-}
-.step1-photo-thumb {
-  width: auto;
-  height: auto;
-  max-width: min(100%, 1200px);
-  max-height: none;
-  object-fit: contain;
-  image-rendering: auto;
   display: block;
+  width: 100%;
+  height: 200px;
+  overflow: hidden;
+  border-radius: 7px;
   border: 1px solid #cbd5e1;
-  background: #fff;
+  background: #e5e7eb;
+  text-decoration: none;
+  position: relative;
+}
+.step1-photo-link:hover { border-color: #94a3b8; }
+.step1-photo-thumb {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  object-position: center;
+  display: block;
+  border: none;
+  border-radius: 6px;
+  background: #e5e7eb;
 }
 .step1-photo-remove-btn {
   position: absolute;
-  top: -6px;
-  right: -6px;
-  width: 18px;
-  height: 18px;
-  border: 1px solid #ffffff;
+  top: 6px;
+  right: 6px;
+  width: 22px;
+  height: 22px;
+  border: 1.5px solid rgba(255,255,255,.8);
   border-radius: 999px;
-  background: rgba(17, 24, 39, 0.9);
+  background: rgba(17, 24, 39, 0.75);
   color: #fff;
-  font-size: 14px;
+  font-size: 15px;
   line-height: 1;
   display: inline-flex;
   align-items: center;
   justify-content: center;
   cursor: pointer;
   transition: background 0.12s;
+  z-index: 1;
 }
 .step1-photo-remove-btn:hover {
   background: #dc2626;

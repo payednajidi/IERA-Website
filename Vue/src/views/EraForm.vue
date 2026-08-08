@@ -1,11 +1,12 @@
 <script setup>
 import { ref, computed, onMounted, watch } from 'vue'
 import api from '../services/api'
-import { useRouter } from 'vue-router'
+import { useRouter, useRoute } from 'vue-router'
 import { getBossQuestionnaireId, markStepCompleted, setCurrentAssessmentId } from '../services/eraProgress'
-import { getBossEraTransfer, consumeBossToEraRedirect } from '../services/bossData'
+import { getBossEraTransfer, consumeBossToEraRedirect, getBossGroupId, clearBossGroupId } from '../services/bossData'
 
 const router = useRouter()
+const route  = useRoute()
 
 const bossIdForBanner = ref(getBossQuestionnaireId())
 
@@ -124,22 +125,98 @@ const rebuildPhotoGroups = () => {
 }
 
 watch(processes, () => { rebuildPhotoGroups() }, { deep: true })
-onMounted(() => {
+
+// ── Shared helpers ────────────────────────────────────────────────────────────
+
+// Normalise any date value (plain "YYYY-MM-DD" or full Eloquent ISO-8601 string)
+// to the 10-character date-only form that <input type="date"> and string comparison require.
+const datePart = (s) => s ? String(s).substring(0, 10) : null
+
+// Populate all ERA form fields from a BOSS group API response object.
+// Used by both the auto-fill-on-redirect path and the manual "Connect" widget.
+const populateFromGroup = (groupData) => {
+  bossGroupData.value  = groupData
+  bossAutoFilled.value = true
+
+  const questionnaires = groupData.questionnaires ?? []
+  if (questionnaires.length === 0) return
+
+  // Header: use the first record (all records in a group share worker / site context)
+  const first = questionnaires[0]
+  assessorName.value = first.name       || ''
+  department.value   = first.department || ''
+
+  // Processes / Tasks — group by process name; each job_task = one task row.
+  // description and worker_activities are intentionally left blank for manual input.
+  const processMap = new Map()
+  for (const q of questionnaires) {
+    const pName = (q.process  || '').trim()
+    const tName = (q.job_task || '').trim()
+    if (!processMap.has(pName)) processMap.set(pName, [])
+    if (tName) processMap.get(pName).push(tName)
+  }
+  if (processMap.size > 0) {
+    processes.value = Array.from(processMap.entries()).map(([pName, taskTitles]) => ({
+      name: pName,
+      tasks: taskTitles.length > 0
+        ? taskTitles.map((title, idx) => ({ title, description: '', worker_activities: '', row_number: idx + 1 }))
+        : [{ title: '', description: '', worker_activities: '', row_number: 1 }],
+    }))
+  }
+
+  // Date range — aggregate: earliest start → latest end across all questionnaires
+  const starts = questionnaires.map(q => datePart(q.date_start)).filter(Boolean)
+  const ends   = questionnaires.map(q => datePart(q.date_end)).filter(Boolean)
+  if (starts.length > 0) startDate.value = starts.reduce((a, b) => a < b ? a : b)
+  if (ends.length   > 0) endDate.value   = ends.reduce((a, b)   => a > b ? a : b)
+}
+
+// Fallback: apply the single-record cache when the group API is unavailable.
+const applyTransferData = () => {
+  const bossData = getBossEraTransfer()
+  if (!bossData) return
+  assessorName.value = bossData.name       || ''
+  department.value   = bossData.department || ''
+  if (bossData.process) processes.value[0].name = bossData.process
+  if (bossData.jobTask && processes.value[0]?.tasks?.length > 0) {
+    processes.value[0].tasks[0].title = bossData.jobTask
+  }
+  if (bossData.date_start) startDate.value = bossData.date_start
+  if (bossData.date_end)   endDate.value   = bossData.date_end
+  bossAutoFilled.value = true
+  bossFilled.value     = bossData
+}
+
+onMounted(async () => {
   rebuildPhotoGroups()
 
-  const fromBoss = consumeBossToEraRedirect()
-  if (fromBoss) {
-    const bossData = getBossEraTransfer()
-    if (bossData) {
-      assessorName.value = bossData.name || ''
-      department.value = bossData.department || ''
-      if (bossData.process) processes.value[0].name = bossData.process
-      if (bossData.jobTask && processes.value[0]?.tasks?.length > 0) {
-        processes.value[0].tasks[0].title = bossData.jobTask
-      }
-      bossAutoFilled.value = true
-      bossFilled.value = bossData
+  // ── Resolve the BOSS group ID from three sources (priority order) ──────────
+  // 1. Route param:   /era-form/boss-group/2      → route.params.groupId
+  // 2. Query param:   /era-form?boss_group=2      → route.query.boss_group
+  // 3. Redirect flag: BOSS form → "Proceed to ERA" → sessionStorage flag + localStorage group ID
+  const urlGroupId  = route.params.groupId || route.query.boss_group || null
+  const fromBoss    = consumeBossToEraRedirect()             // one-shot flag; consume regardless
+  const storedGroupId = fromBoss ? getBossGroupId() : null
+
+  const groupId = urlGroupId ?? storedGroupId
+
+  if (groupId) {
+    bossGroupLoading.value = true
+    try {
+      const res = await api.get(`/boss-groups/${groupId}`)
+      populateFromGroup(res.data)
+      saveBossGroupId(res.data.id)
+    } catch (e) {
+      console.warn('Could not fetch BOSS group; using cached transfer data.', e)
+      // Only fall back to single-record cache when we arrived via the redirect
+      // flow (not via a direct URL), since the URL should be authoritative.
+      if (!urlGroupId) applyTransferData()
+    } finally {
+      bossGroupLoading.value = false
     }
+  } else if (fromBoss) {
+    // Redirect flag was set but no group ID exists — use single-record cache.
+    applyTransferData()
   }
 })
 
@@ -187,9 +264,57 @@ const clearGroupPhotos = (groupIndex) => {
   group.previews = []
 }
 
-const isSubmitting = ref(false)
-const bossAutoFilled = ref(false)
-const bossFilled = ref(null)
+const isSubmitting      = ref(false)
+const bossAutoFilled    = ref(false)
+const bossFilled        = ref(null)   // single-record fallback data
+const bossGroupData     = ref(null)   // full group response from API
+const bossGroupLoading  = ref(false)
+const bossGroupExpanded = ref(true)   // summary panel starts open
+
+// ── Manual "Connect to BOSS Group" widget ─────────────────────────────────────
+const bossLinkId      = ref('')
+const bossLinkError   = ref('')
+const bossLinkLoading = ref(false)
+
+const connectBossGroup = async () => {
+  const id = bossLinkId.value.trim()
+  if (!id || isNaN(Number(id))) {
+    bossLinkError.value = 'Please enter a valid numeric BOSS Group ID.'
+    return
+  }
+  bossLinkError.value  = ''
+  bossLinkLoading.value = true
+  try {
+    const res = await api.get(`/boss-groups/${id}`)
+    populateFromGroup(res.data)
+    saveBossGroupId(res.data.id)
+    bossLinkId.value = ''   // clear the input after successful connect
+  } catch (e) {
+    bossLinkError.value = e.response?.status === 404
+      ? `BOSS Group #${id} was not found. Please check the ID and try again.`
+      : 'Could not connect to the BOSS Group. Please try again.'
+  } finally {
+    bossLinkLoading.value = false
+  }
+}
+
+// Format a BOSS date pair into a human-readable range string.
+// Uses the module-level datePart() to handle both "YYYY-MM-DD" and full ISO-8601 strings.
+const formatBossDateRange = (dateStart, dateEnd) => {
+  if (!dateStart && !dateEnd) return '—'
+  const fmt = (iso, opts) => new Date(datePart(iso) + 'T00:00:00').toLocaleDateString('en-GB', opts)
+  const ds = datePart(dateStart)
+  const de = datePart(dateEnd)
+  if (ds && de) {
+    const sMY = fmt(ds, { month: 'long', year: 'numeric' })
+    const eMY = fmt(de, { month: 'long', year: 'numeric' })
+    if (sMY === eMY) {
+      return `${fmt(ds, { day: 'numeric' })}–${fmt(de, { day: 'numeric' })} ${eMY}`
+    }
+    return `${fmt(ds, { day: 'numeric', month: 'long', year: 'numeric' })} – ${fmt(de, { day: 'numeric', month: 'long', year: 'numeric' })}`
+  }
+  return fmt(ds ?? de, { day: 'numeric', month: 'long', year: 'numeric' })
+}
 
 const submitForm = async () => {
   if (isSubmitting.value) return
@@ -202,6 +327,8 @@ const submitForm = async () => {
   formData.append('breaks', breaks.value)
   const bossId = getBossQuestionnaireId()
   if (bossId) formData.append('boss_questionnaire_id', bossId)
+  const bossGroupId = getBossGroupId()
+  if (bossGroupId) formData.append('boss_group_id', bossGroupId)
   processes.value.forEach((process, pIdx) => {
     formData.append(`processes[${pIdx}][name]`, process.name)
     process.tasks.forEach((task, tIdx) => {
@@ -224,6 +351,10 @@ const submitForm = async () => {
     const assessmentId = response.data.id
     setCurrentAssessmentId(assessmentId)
     markStepCompleted(assessmentId, 1)
+    // The BOSS group has been consumed by this ERA assessment.
+    // Clear the group ID so the next BOSS session starts a brand-new group
+    // instead of appending to the one that was just linked here.
+    clearBossGroupId()
     router.push(`/era-checklist/${assessmentId}`)
   } catch (error) {
     console.error(error.response?.data)
@@ -244,7 +375,7 @@ const submitForm = async () => {
     </div>
 
     <!-- BOSS auto-fill banner -->
-    <div v-if="bossAutoFilled && bossFilled" class="boss-prefill-banner">
+    <div v-if="bossAutoFilled" class="boss-prefill-banner">
       <div class="boss-prefill-icon">
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
           <polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/>
@@ -252,8 +383,8 @@ const submitForm = async () => {
         </svg>
       </div>
       <span class="boss-prefill-text">
-        <strong>Transferred from BOSS Questionnaire:</strong>
-        Assessor name, department, process, and task title have been pre-filled.
+        <strong>Transferred from BOSS Questionnaire<template v-if="bossGroupData"> ({{ bossGroupData.questionnaires?.length ?? 0 }} record{{ (bossGroupData.questionnaires?.length ?? 0) !== 1 ? 's' : '' }})</template>:</strong>
+        Assessor name, department, process, task title, and assessment date range have been pre-filled.
         Please review and complete the remaining fields.
       </span>
       <button class="boss-prefill-dismiss" @click="bossAutoFilled = false" title="Dismiss">×</button>
@@ -279,6 +410,119 @@ const submitForm = async () => {
 
     <!-- -- FORM BODY -- -->
     <div class="form-body">
+
+      <!-- ── Connect to BOSS Group (shown when no group is linked yet) ─────── -->
+      <div v-if="!bossGroupData" class="boss-connect-card">
+        <div class="bcc-header">
+          <span class="bcc-icon">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/>
+              <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/>
+            </svg>
+          </span>
+          <span class="bcc-title">Connect to a BOSS Group</span>
+        </div>
+        <div class="bcc-body">
+          <p class="bcc-desc">
+            If you have already submitted one or more BOSS Questionnaires in a previous session,
+            enter the <strong>BOSS Group ID</strong> to restore all linked workers, processes,
+            tasks, and date ranges into this ERA Assessment.
+          </p>
+          <div class="bcc-form">
+            <label class="bcc-label">BOSS Group ID</label>
+            <div class="bcc-input-row">
+              <input
+                v-model="bossLinkId"
+                class="bcc-input"
+                type="number"
+                min="1"
+                placeholder="e.g. 2"
+                @keydown.enter.prevent="connectBossGroup"
+              />
+              <button
+                class="bcc-btn"
+                :disabled="bossLinkLoading || !bossLinkId.trim()"
+                @click="connectBossGroup"
+              >
+                <span v-if="bossLinkLoading" class="mini-spinner"></span>
+                <span v-else>
+                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg>
+                  Connect
+                </span>
+              </button>
+            </div>
+            <p v-if="bossLinkError" class="bcc-error">{{ bossLinkError }}</p>
+            <p class="bcc-hint">
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+              You can also navigate directly using a shareable link, e.g.
+              <code class="bcc-code">/era-form/boss-group/2</code>.
+              The BOSS Group ID is returned after every BOSS submission and visible in the database.
+            </p>
+          </div>
+        </div>
+      </div>
+
+      <!-- ── BOSS Group Summary card ────────────────────────────────────────── -->
+      <div v-if="bossGroupData" class="boss-group-card">
+        <button class="boss-group-toggle" @click="bossGroupExpanded = !bossGroupExpanded">
+          <span class="bgg-icon">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/>
+              <path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/>
+            </svg>
+          </span>
+          <span class="bgg-title">
+            BOSS Group —
+            <strong>{{ bossGroupData.questionnaires?.length ?? 0 }}</strong>
+            questionnaire{{ (bossGroupData.questionnaires?.length ?? 0) !== 1 ? 's' : '' }} linked to this assessment
+          </span>
+          <span class="bgg-chevron">{{ bossGroupExpanded ? '▾' : '▸' }}</span>
+        </button>
+
+        <div v-if="bossGroupExpanded" class="boss-group-body">
+          <div class="bgg-table-wrap">
+            <table class="bgg-table">
+              <thead>
+                <tr>
+                  <th class="col-no">#</th>
+                  <th>Worker</th>
+                  <th>Date Range</th>
+                  <th>Process / Task</th>
+                  <th>Reported Body Parts</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr v-for="(q, idx) in bossGroupData.questionnaires" :key="q.id">
+                  <td class="col-no">{{ idx + 1 }}</td>
+                  <td>
+                    <span class="bgg-worker-name">{{ q.name }}</span>
+                    <span v-if="q.staff_id" class="bgg-staff-id"> · {{ q.staff_id }}</span>
+                    <span v-if="q.department" class="bgg-dept"><br>{{ q.department }}</span>
+                  </td>
+                  <td class="bgg-date">{{ formatBossDateRange(q.date_start, q.date_end) }}</td>
+                  <td>
+                    <span v-if="q.process" class="bgg-process">{{ q.process }}</span>
+                    <span v-if="q.process && q.job_task" class="bgg-sep"> / </span>
+                    <span v-if="q.job_task" class="bgg-task">{{ q.job_task }}</span>
+                    <span v-if="!q.process && !q.job_task" class="bgg-none">—</span>
+                  </td>
+                  <td>
+                    <template v-if="q.selected_body_parts?.length">
+                      <span v-for="(part, pi) in q.selected_body_parts" :key="part" class="bgg-part-chip">{{ part }}</span>
+                    </template>
+                    <span v-else class="bgg-none">None reported</span>
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+          <div class="bgg-footer">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+            The assessment date range below spans the earliest start to the latest end across all linked BOSS records.
+            Affected body parts from all records will appear in Step 7.
+          </div>
+        </div>
+      </div>
 
       <!-- -- SECTION 1: Assessment Info -- -->
       <div class="form-card" style="--delay:0.05s">
@@ -601,6 +845,236 @@ const submitForm = async () => {
 }
 .boss-prefill-dismiss:hover { opacity: 1; }
 
+/* ── Connect to BOSS Group card ───────────────────────────────────────────── */
+.boss-connect-card {
+  background: #fff;
+  border: 1.5px dashed #bac8d7;
+  border-radius: 10px;
+  overflow: hidden;
+}
+.bcc-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 18px;
+  background: linear-gradient(90deg, #17324f 0%, #1e4a6e 100%);
+}
+.bcc-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px; height: 28px;
+  border-radius: 6px;
+  background: rgba(126,184,247,0.25);
+  color: #7eb8f7;
+  flex-shrink: 0;
+}
+.bcc-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: rgba(231,241,251,0.92);
+  letter-spacing: 0.01em;
+}
+.bcc-body {
+  padding: 16px 20px 18px;
+}
+.bcc-desc {
+  font-size: 13px;
+  color: #344658;
+  line-height: 1.6;
+  margin-bottom: 14px;
+}
+.bcc-desc strong { color: #0b1a2a; }
+.bcc-label {
+  display: block;
+  font-size: 11.5px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: #344658;
+  margin-bottom: 6px;
+}
+.bcc-form { max-width: 480px; }
+.bcc-input-row {
+  display: flex;
+  gap: 8px;
+  align-items: stretch;
+}
+.bcc-input {
+  flex: 1;
+  padding: 9px 12px;
+  border: 1.5px solid #d7e0eb;
+  border-radius: 7px;
+  font-size: 14px;
+  color: #0f1e2e;
+  background: #fff;
+  outline: none;
+  transition: border-color 0.15s;
+  -moz-appearance: textfield;
+}
+.bcc-input::-webkit-outer-spin-button,
+.bcc-input::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
+.bcc-input:focus { border-color: #0e7c72; box-shadow: 0 0 0 3px rgba(14,124,114,0.12); }
+.bcc-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 9px 18px;
+  background: #0e7c72;
+  color: #fff;
+  border: none;
+  border-radius: 7px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.15s;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+.bcc-btn:hover:not(:disabled) { background: #0a5e56; }
+.bcc-btn:disabled { opacity: 0.55; cursor: not-allowed; }
+.bcc-error {
+  margin-top: 7px;
+  font-size: 12.5px;
+  color: #c0392b;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+.bcc-hint {
+  display: flex;
+  align-items: flex-start;
+  gap: 5px;
+  margin-top: 10px;
+  font-size: 12px;
+  color: #66798d;
+  line-height: 1.5;
+}
+.bcc-hint svg { flex-shrink: 0; margin-top: 2px; opacity: 0.65; }
+.bcc-code {
+  font-family: ui-monospace, 'Cascadia Code', monospace;
+  font-size: 11.5px;
+  background: #e8f0f8;
+  color: #1a3a5c;
+  padding: 1px 5px;
+  border-radius: 4px;
+  white-space: nowrap;
+}
+
+/* ── BOSS Group Summary card ──────────────────────────────────────────────── */
+.boss-group-card {
+  background: #fff;
+  border: 1.5px solid #0e7c72;
+  border-radius: 10px;
+  overflow: hidden;
+  box-shadow: 0 2px 8px rgba(14,124,114,0.10);
+}
+.boss-group-toggle {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 13px 18px;
+  background: linear-gradient(90deg, #0b1a2a 0%, #0e4a44 100%);
+  border: none;
+  cursor: pointer;
+  text-align: left;
+  color: #fff;
+}
+.bgg-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px; height: 28px;
+  border-radius: 6px;
+  background: rgba(14,124,114,0.55);
+  flex-shrink: 0;
+  color: #7ee8e0;
+}
+.bgg-title {
+  flex: 1;
+  font-size: 13px;
+  font-weight: 500;
+  color: rgba(231,241,251,0.92);
+  letter-spacing: 0.01em;
+}
+.bgg-title strong { color: #7ee8e0; font-weight: 700; }
+.bgg-chevron {
+  font-size: 12px;
+  color: rgba(255,255,255,0.55);
+  flex-shrink: 0;
+}
+.boss-group-body { padding: 0; }
+.bgg-table-wrap { overflow-x: auto; }
+.bgg-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12.5px;
+}
+.bgg-table thead tr {
+  background: #f0f7f6;
+  border-bottom: 1.5px solid #c2e0dd;
+}
+.bgg-table th {
+  padding: 8px 14px;
+  text-align: left;
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: #0b4a44;
+  white-space: nowrap;
+}
+.bgg-table th.col-no,
+.bgg-table td.col-no {
+  width: 36px;
+  text-align: center;
+  color: #688f8c;
+  font-weight: 600;
+}
+.bgg-table tbody tr {
+  border-bottom: 1px solid #e8f3f2;
+  transition: background 0.12s;
+}
+.bgg-table tbody tr:last-child { border-bottom: none; }
+.bgg-table tbody tr:hover { background: #f7fcfc; }
+.bgg-table td {
+  padding: 9px 14px;
+  vertical-align: top;
+  color: #1a3440;
+}
+.bgg-worker-name { font-weight: 600; color: #0b2a35; }
+.bgg-staff-id    { font-size: 11.5px; color: #5a7a80; }
+.bgg-dept        { font-size: 11.5px; color: #5a7a80; margin-top: 2px; }
+.bgg-date        { white-space: nowrap; font-size: 12px; color: #2a5a55; font-weight: 500; }
+.bgg-process     { font-weight: 600; color: #0b2a35; }
+.bgg-task        { color: #344658; }
+.bgg-sep         { color: #aab; }
+.bgg-none        { color: #9aacb8; font-style: italic; }
+.bgg-part-chip {
+  display: inline-block;
+  padding: 2px 7px;
+  border-radius: 99px;
+  background: #ddf2ef;
+  color: #0b4a44;
+  font-size: 11px;
+  font-weight: 600;
+  margin: 1px 2px 1px 0;
+  white-space: nowrap;
+}
+.bgg-footer {
+  display: flex;
+  align-items: flex-start;
+  gap: 7px;
+  padding: 9px 16px;
+  background: #f0f7f6;
+  border-top: 1px solid #c2e0dd;
+  font-size: 11.5px;
+  color: #2a6660;
+  line-height: 1.5;
+}
+.bgg-footer svg { flex-shrink: 0; margin-top: 1px; opacity: 0.7; }
+
 .era-page {
   --navy: #0b1a2a;
   --navy-mid: #17324f;
@@ -628,7 +1102,7 @@ const submitForm = async () => {
 * { box-sizing: border-box; margin: 0; padding: 0; }
 
 .era-page {
-  font-family: 'Figtree', sans-serif;
+  font-family: Arial, sans-serif;
   font-size: 14px;
   color: var(--text);
   display: flex;
@@ -668,7 +1142,7 @@ const submitForm = async () => {
   position: absolute;
   right: 24px;
   bottom: -16px;
-  font-family: 'Sora', sans-serif;
+  font-family: Arial, sans-serif;
   font-size: 80px;
   font-weight: 800;
   color: rgba(255,255,255,0.04);
@@ -705,7 +1179,7 @@ const submitForm = async () => {
 }
 
 .hero-title {
-  font-family: 'Sora', sans-serif;
+  font-family: Arial, sans-serif;
   font-size: 26px;
   font-weight: 700;
   color: #f7fbff;
@@ -790,7 +1264,7 @@ const submitForm = async () => {
   background: linear-gradient(180deg, #ffffff 0%, #f9fbfe 100%);
 }
 .card-num {
-  font-family: 'Sora', sans-serif;
+  font-family: Arial, sans-serif;
   font-size: 28px;
   font-weight: 800;
   color: #8da0b5;
@@ -801,7 +1275,7 @@ const submitForm = async () => {
 }
 .card-heading { flex: 1; }
 .card-heading h2 {
-  font-family: 'Sora', sans-serif;
+  font-family: Arial, sans-serif;
   font-size: 15px;
   font-weight: 700;
   color: var(--navy);
@@ -885,7 +1359,7 @@ const submitForm = async () => {
   padding: 8px 16px;
   font-size: 12.5px;
   font-weight: 700;
-  font-family: 'Sora', sans-serif;
+  font-family: Arial, sans-serif;
   border: 1px solid #173b5b;
   border-radius: var(--radius-sm);
   background: linear-gradient(180deg, #1f4e77 0%, #173b5b 100%);
@@ -1047,7 +1521,7 @@ const submitForm = async () => {
 }
 .add-task-btn {
   display: inline-flex; align-items: center; gap: 6px;
-  padding: 8px 16px; font-size: 12.5px; font-weight: 700; font-family: 'Sora', sans-serif;
+  padding: 8px 16px; font-size: 12.5px; font-weight: 700; font-family: Arial, sans-serif;
   border: 1px solid #173b5b; border-radius: var(--radius-sm);
   background: linear-gradient(180deg, #1f4e77 0%, #173b5b 100%);
   color: #fff; cursor: pointer;
@@ -1196,7 +1670,7 @@ const submitForm = async () => {
 .submit-btn {
   display: inline-flex; align-items: center; gap: 10px;
   padding: 12px 28px; font-size: 14px; font-weight: 700;
-  font-family: 'Sora', sans-serif; border: none; border-radius: var(--radius-sm);
+  font-family: Arial, sans-serif; border: none; border-radius: var(--radius-sm);
   background: linear-gradient(180deg, #15385a 0%, #0e2740 100%);
   color: #fff; cursor: pointer;
   transition: all 0.2s; letter-spacing: 0.02em;

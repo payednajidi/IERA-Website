@@ -55,19 +55,28 @@ class EraChecklistController extends Controller
             'answers.*.task_id' => 'required|exists:era_tasks,id',
             'answers.*.checklist_item_id' => 'required|exists:era_checklist_items,id',
             'answers.*.answer' => 'required|boolean',
+            'answers.*.remarks' => 'nullable|string',
         ]);
 
         DB::transaction(function () use ($request) {
 
             EraChecklistAnswer::where('assessment_id', $request->assessment_id)->delete();
 
+            $now = now();
+            $rows = [];
             foreach ($request->answers as $answer) {
-                EraChecklistAnswer::create([
-                    'assessment_id' => $request->assessment_id,
-                    'task_id' => $answer['task_id'],
+                $rows[] = [
+                    'assessment_id'     => $request->assessment_id,
+                    'task_id'           => $answer['task_id'],
                     'checklist_item_id' => $answer['checklist_item_id'],
-                    'answer' => $answer['answer'],
-                ]);
+                    'answer'            => (bool) $answer['answer'],
+                    'remarks'           => trim((string) ($answer['remarks'] ?? '')) !== '' ? trim((string) $answer['remarks']) : null,
+                    'created_at'        => $now,
+                    'updated_at'        => $now,
+                ];
+            }
+            if (!empty($rows)) {
+                EraChecklistAnswer::insert($rows);
             }
         });
 

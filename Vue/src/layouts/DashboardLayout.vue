@@ -1,6 +1,9 @@
 <script setup>
+import { useRoute } from 'vue-router'
 import Sidebar from '../components/Sidebar.vue'
 import HeaderBar from '../components/HeaderBar.vue'
+
+const route = useRoute()
 </script>
 
 <template>
@@ -13,7 +16,7 @@ import HeaderBar from '../components/HeaderBar.vue'
 
     <HeaderBar />
 
-    <div class="content">
+    <div class="content" :class="{ 'content-fullscreen': route.meta?.fullscreen }">
       <router-view />
     </div>
 
@@ -43,6 +46,11 @@ import HeaderBar from '../components/HeaderBar.vue'
   background:#f5f6f8;
   overflow:auto;
   min-width: 0;
+}
+
+.content-fullscreen{
+  padding:0;
+  overflow:hidden;
 }
 
 </style>

@@ -2,8 +2,8 @@
 import { ref, computed } from 'vue'
 import { useRouter } from 'vue-router'
 import api from '../services/api'
-import { setBossQuestionnaireId } from '../services/eraProgress'
-import { saveBossEraTransfer, flagBossToEraRedirect } from '../services/bossData'
+import { setBossQuestionnaireId, clearBossQuestionnaireId } from '../services/eraProgress'
+import { saveBossEraTransfer, clearBossEraTransfer, flagBossToEraRedirect, saveBossGroupId, getBossGroupId, clearBossGroupId } from '../services/bossData'
 
 const router = useRouter()
 
@@ -77,6 +77,7 @@ const HOTSPOTS = [
 const stage = ref('form')
 const showRetainPanel = ref(false)   // shows the checkbox retention panel
 const lastSubmitted = ref(null)      // snapshot of the last submission
+
 
 // ── Retainable fields definition ─────────────────────────────────────────────
 // Each entry describes one retainable piece of worker information.
@@ -192,17 +193,24 @@ const submitForm = async () => {
         return { severity, frequency }
       })
     })
-    // date_start and date_end are already in the payload as ISO date strings (YYYY-MM-DD).
-    // The legacy `date` field is omitted — the backend accepts it as nullable.
+    // Include the current session's BOSS group ID so that successive BOSS forms
+    // submitted in the same session are linked to the same group.
+    const currentGroupId = getBossGroupId()
+    if (currentGroupId) payload.boss_group_id = Number(currentGroupId)
+
     const res = await api.post('/boss-questionnaires', payload)
     setBossQuestionnaireId(res.data.id)
+    // Persist the group ID returned by the backend (new group on first save, same group on repeat).
+    saveBossGroupId(res.data.boss_group_id)
 
-    // Save transfer data for ERA auto-fill
+    // Save transfer data for ERA auto-fill (used as fallback if group API is unreachable)
     saveBossEraTransfer({
       name:       headerFields.value.name,
       department: headerFields.value.department,
       process:    headerFields.value.process,
       jobTask:    headerFields.value.job_task,
+      date_start: headerFields.value.date_start,
+      date_end:   headerFields.value.date_end,
     })
     // Snapshot includes formatted date for display in the submitted summary
     lastSubmitted.value = {
@@ -213,6 +221,10 @@ const submitForm = async () => {
     stage.value = 'submitted'
   } catch (err) {
     console.error(err.response?.data ?? err)
+    // A stale boss_group_id in localStorage (e.g. from a previous session whose
+    // database was reset) could be causing the failure. Clear it so the retry
+    // creates a fresh group rather than referencing a non-existent one.
+    clearBossGroupId()
     alert('Error saving BOSS Questionnaire. Please try again.')
   } finally {
     isSubmitting.value = false
@@ -263,6 +275,35 @@ const clearAllInfo = () => {
   activeRegionKey.value = null
   showRetainPanel.value = false
   stage.value = 'form'
+  // Clear the group so the next submission starts a brand-new group.
+  clearBossGroupId()
+}
+
+// ── Reset session ─────────────────────────────────────────────────────────────
+const showResetDialog = ref(false)
+
+const confirmReset = () => {
+  // Wipe every piece of BOSS-related local/session storage
+  clearBossGroupId()
+  clearBossQuestionnaireId()
+  clearBossEraTransfer()
+  sessionStorage.removeItem('boss_to_era_redirect')
+
+  // Reset all in-memory form state
+  headerFields.value = {
+    name: '', staff_id: '', date_start: '', date_end: '',
+    department: '', company: '', process: '', job_task: '',
+  }
+  regionState.value = initRegionState()
+  activeRegionKey.value = null
+  showRetainPanel.value = false
+  lastSubmitted.value = null
+  stage.value = 'form'
+  showResetDialog.value = false
+}
+
+const cancelReset = () => {
+  showResetDialog.value = false
 }
 </script>
 
@@ -272,7 +313,7 @@ const clearAllInfo = () => {
     <!-- Hero -->
     <div class="page-hero">
       <div class="hero-left">
-        <div class="hero-tag">PRE-ASSESSMENT</div>
+        <div class="hero-tag">MUSCULOSKELETAL QUESTIONS - BOSS</div>
         <h1 class="hero-title">BOSS Questionnaire</h1>
         <p class="hero-sub">Body Symptom Survey — complete before proceeding to the ERA Assessment.</p>
       </div>
@@ -561,6 +602,13 @@ const clearAllInfo = () => {
             By submitting, you confirm the information above is accurate and ready to be carried forward into the ERA Assessment.
           </div>
         </div>
+        <button type="button" class="btn-reset-session" @click="showResetDialog = true" title="Clear all locally stored BOSS data and start a new session">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2">
+            <polyline points="1 4 1 10 7 10"/>
+            <path d="M3.51 15a9 9 0 1 0 .49-4.95"/>
+          </svg>
+          Reset Session
+        </button>
         <button type="button" class="btn-submit" :disabled="isSubmitting" @click="submitForm">
           <span v-if="isSubmitting">Saving…</span>
           <span v-else>Submit BOSS Questionnaire →</span>
@@ -648,9 +696,10 @@ const clearAllInfo = () => {
             </svg>
           </div>
           <div class="action-card-body">
-            <div class="action-card-title">Create New BOSS Form</div>
+            <div class="action-card-title">Add Another Worker to This Group</div>
             <div class="action-card-desc">
-              Submit another BOSS questionnaire. Choose which fields to carry forward from this submission.
+              Submit another BOSS questionnaire for the <strong>same ERA Assessment group</strong>.
+              Choose which fields to carry forward.
             </div>
           </div>
           <svg class="action-arrow" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
@@ -743,6 +792,55 @@ const clearAllInfo = () => {
 
     </div><!-- /submitted stage -->
 
+    <!-- ─── RESET CONFIRMATION DIALOG ─── -->
+    <Teleport to="body">
+      <Transition name="reset-fade">
+        <div v-if="showResetDialog" class="reset-overlay" @click.self="cancelReset" role="dialog" aria-modal="true" aria-labelledby="reset-title">
+          <div class="reset-dialog">
+
+            <!-- Icon -->
+            <div class="reset-dialog-icon">
+              <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
+                <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/>
+                <line x1="12" y1="9" x2="12" y2="13"/>
+                <line x1="12" y1="17" x2="12.01" y2="17"/>
+              </svg>
+            </div>
+
+            <!-- Text -->
+            <h3 id="reset-title" class="reset-dialog-title">Reset BOSS Session?</h3>
+            <p class="reset-dialog-msg">
+              This will <strong>permanently remove</strong> all locally stored BOSS data for the current session, including:
+            </p>
+            <ul class="reset-dialog-list">
+              <li>Current BOSS Group ID</li>
+              <li>Last submitted questionnaire reference</li>
+              <li>All unsaved form data and body-symptom selections</li>
+              <li>Any pending ERA transfer data</li>
+            </ul>
+            <p class="reset-dialog-note">
+              <strong>This action cannot be undone.</strong> After confirming, you will be redirected to a fresh BOSS Questionnaire to begin a new BOSS Group.
+            </p>
+
+            <!-- Actions -->
+            <div class="reset-dialog-actions">
+              <button type="button" class="reset-btn-cancel" @click="cancelReset">
+                Cancel
+              </button>
+              <button type="button" class="reset-btn-confirm" @click="confirmReset">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+                  <polyline points="1 4 1 10 7 10"/>
+                  <path d="M3.51 15a9 9 0 1 0 .49-4.95"/>
+                </svg>
+                Yes, Reset Session
+              </button>
+            </div>
+
+          </div>
+        </div>
+      </Transition>
+    </Teleport>
+
   </div>
 </template>
 
@@ -772,7 +870,7 @@ const clearAllInfo = () => {
   --radius-sm: 6px;
   --shadow-card: 0 2px 8px rgba(15,30,46,0.08), 0 10px 24px rgba(15,30,46,0.08);
 
-  font-family: 'Figtree', sans-serif;
+  font-family: Arial, sans-serif;
   font-size: 14px;
   color: var(--text);
   display: flex; flex-direction: column; gap: 0;
@@ -800,7 +898,7 @@ const clearAllInfo = () => {
 }
 .page-hero::after {
   content: 'BOSS'; position: absolute; right: 24px; bottom: -16px;
-  font-family: 'Sora', sans-serif; font-size: 72px; font-weight: 800;
+  font-family: Arial, sans-serif; font-size: 72px; font-weight: 800;
   color: rgba(255,255,255,0.04); letter-spacing: -2px;
   pointer-events: none; user-select: none;
 }
@@ -813,7 +911,7 @@ const clearAllInfo = () => {
   letter-spacing: 0.05em; width: fit-content;
 }
 .hero-title {
-  font-family: 'Sora', sans-serif; font-size: 26px; font-weight: 800;
+  font-family: Arial, sans-serif; font-size: 26px; font-weight: 800;
   color: #fff; line-height: 1.2;
 }
 .hero-sub { font-size: 13px; color: rgba(255,255,255,0.65); max-width: 480px; }
@@ -869,7 +967,7 @@ const clearAllInfo = () => {
   width: 32px; height: 32px; border-radius: 50%;
   background: var(--navy); color: #fff; flex-shrink: 0;
   display: flex; align-items: center; justify-content: center;
-  font-family: 'Sora', sans-serif; font-size: 13px; font-weight: 700;
+  font-family: Arial, sans-serif; font-size: 13px; font-weight: 700;
 }
 .card-title { font-size: 15px; font-weight: 600; color: var(--navy); }
 .card-desc  { font-size: 12px; color: var(--text-soft); margin-top: 2px; }
@@ -985,7 +1083,7 @@ const clearAllInfo = () => {
 .chip-letter {
   width: 18px; height: 18px; border-radius: 50%;
   background: var(--navy); color: #fff;
-  font-family: 'Sora', sans-serif; font-size: 10px; font-weight: 700;
+  font-family: Arial, sans-serif; font-size: 10px; font-weight: 700;
   display: flex; align-items: center; justify-content: center; flex-shrink: 0;
 }
 .chip--active .chip-letter { background: var(--green); color: #fff; }
@@ -1019,11 +1117,11 @@ const clearAllInfo = () => {
 .detail-letter {
   width: 38px; height: 38px; border-radius: 50%;
   background: var(--accent); color: var(--navy);
-  font-family: 'Sora', sans-serif; font-size: 18px; font-weight: 800;
+  font-family: Arial, sans-serif; font-size: 18px; font-weight: 800;
   display: flex; align-items: center; justify-content: center; flex-shrink: 0;
 }
 .detail-info { flex: 1; }
-.detail-name { font-size: 17px; font-weight: 700; color: #fff; font-family: 'Sora', sans-serif; }
+.detail-name { font-size: 17px; font-weight: 700; color: #fff; font-family: Arial, sans-serif; }
 .detail-sub  { font-size: 12px; color: rgba(255,255,255,0.6); margin-top: 2px; }
 /* Affected toggle — inside detail header */
 .affected-toggle {
@@ -1152,7 +1250,7 @@ const clearAllInfo = () => {
   padding: 12px 28px;
   background: var(--accent); color: var(--navy);
   border: none; border-radius: var(--radius-sm);
-  font-family: 'Sora', sans-serif; font-size: 14px; font-weight: 700;
+  font-family: Arial, sans-serif; font-size: 14px; font-weight: 700;
   cursor: pointer; transition: all 0.15s;
   box-shadow: 0 2px 8px rgba(232,160,32,0.3);
   margin-left: auto;
@@ -1162,6 +1260,148 @@ const clearAllInfo = () => {
   transform: translateY(-1px);
 }
 .btn-submit:disabled { opacity: 0.6; cursor: not-allowed; }
+
+/* ── Reset Session button ─────────────────────────────────────────────────── */
+.btn-reset-session {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 10px 20px;
+  background: transparent;
+  color: #c0392b;
+  border: 1.5px solid #e07070;
+  border-radius: var(--radius-sm);
+  font-family: Arial, sans-serif;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+.btn-reset-session:hover {
+  background: #fff5f4;
+  border-color: #c0392b;
+}
+
+/* ── Reset Confirmation Dialog ────────────────────────────────────────────── */
+.reset-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 9999;
+  background: rgba(11, 26, 42, 0.55);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  backdrop-filter: blur(2px);
+}
+
+.reset-dialog {
+  background: #fff;
+  border-radius: 12px;
+  padding: 32px 28px 24px;
+  max-width: 460px;
+  width: 100%;
+  box-shadow: 0 20px 60px rgba(11,26,42,0.25);
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.reset-dialog-icon {
+  width: 56px;
+  height: 56px;
+  border-radius: 50%;
+  background: #fff5f4;
+  border: 2px solid #f0c2c2;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #c0392b;
+  flex-shrink: 0;
+  align-self: center;
+}
+
+.reset-dialog-title {
+  font-family: Arial, sans-serif;
+  font-size: 18px;
+  font-weight: 700;
+  color: #0f1e2e;
+  margin: 0;
+  text-align: center;
+}
+
+.reset-dialog-msg {
+  font-size: 13.5px;
+  color: #344658;
+  line-height: 1.55;
+  margin: 0;
+}
+
+.reset-dialog-list {
+  margin: 0;
+  padding-left: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  font-size: 13px;
+  color: #344658;
+  line-height: 1.5;
+}
+
+.reset-dialog-note {
+  font-size: 13px;
+  color: #c0392b;
+  background: #fff5f4;
+  border: 1px solid #f0c2c2;
+  border-radius: 6px;
+  padding: 10px 14px;
+  margin: 0;
+  line-height: 1.5;
+}
+
+.reset-dialog-actions {
+  display: flex;
+  gap: 10px;
+  justify-content: flex-end;
+  margin-top: 4px;
+}
+
+.reset-btn-cancel {
+  padding: 10px 20px;
+  background: #f2f6fb;
+  color: #344658;
+  border: 1px solid #d7e0eb;
+  border-radius: 6px;
+  font-family: Arial, sans-serif;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+.reset-btn-cancel:hover { background: #e5ecf5; }
+
+.reset-btn-confirm {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 10px 20px;
+  background: #c0392b;
+  color: #fff;
+  border: none;
+  border-radius: 6px;
+  font-family: Arial, sans-serif;
+  font-size: 13px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+.reset-btn-confirm:hover { background: #a93226; }
+
+/* ── Reset dialog transition ─────────────────────────────────────────────── */
+.reset-fade-enter-active,
+.reset-fade-leave-active { transition: opacity 0.2s ease; }
+.reset-fade-enter-from,
+.reset-fade-leave-to { opacity: 0; }
 
 /* ── Responsive ───────────────────────────────────────────────────────────── */
 @media (max-width: 1100px) {
@@ -1268,7 +1508,7 @@ const clearAllInfo = () => {
   color: #fff; display: flex; align-items: center; justify-content: center;
   flex-shrink: 0; box-shadow: 0 4px 12px rgba(26,110,68,0.3);
 }
-.success-text h2 { font-family: 'Sora', sans-serif; font-size: 16px; font-weight: 700; color: #14532d; margin-bottom: 4px; }
+.success-text h2 { font-family: Arial, sans-serif; font-size: 16px; font-weight: 700; color: #14532d; margin-bottom: 4px; }
 .success-text p  { font-size: 13px; color: #166534; line-height: 1.5; }
 
 .summary-card {
@@ -1315,7 +1555,7 @@ const clearAllInfo = () => {
 .action-era-icon  { background: linear-gradient(135deg, #1f4e77 0%, #173b5b 100%); color: #fff; box-shadow: 0 4px 10px rgba(23,59,91,0.3); }
 .action-new-icon  { background: linear-gradient(135deg, #1a6e44 0%, #154f29 100%); color: #fff; box-shadow: 0 4px 10px rgba(26,110,68,0.3); }
 .action-card-body { flex: 1; }
-.action-card-title { font-family: 'Sora', sans-serif; font-size: 14px; font-weight: 700; color: var(--navy); margin-bottom: 3px; }
+.action-card-title { font-family: Arial, sans-serif; font-size: 14px; font-weight: 700; color: var(--navy); margin-bottom: 3px; }
 .action-card-desc  { font-size: 12px; color: var(--text-soft); line-height: 1.5; }
 .action-arrow { color: var(--text-soft); flex-shrink: 0; }
 .action-era:hover { border-color: #1f4e77; }
@@ -1344,7 +1584,7 @@ const clearAllInfo = () => {
   display: flex; align-items: center; justify-content: center; flex-shrink: 0;
 }
 .retain-panel-title {
-  font-family: 'Sora', sans-serif; font-size: 14px; font-weight: 700;
+  font-family: Arial, sans-serif; font-size: 14px; font-weight: 700;
   color: #f0fff5; margin-bottom: 3px;
 }
 .retain-panel-sub { font-size: 12px; color: rgba(230,255,240,0.8); line-height: 1.5; }
@@ -1435,7 +1675,7 @@ input[type="checkbox"]:checked ~ .cb-box { background: #1a6e44; border-color: #1
 .retain-btn-confirm {
   display: inline-flex; align-items: center; gap: 7px;
   padding: 10px 20px; font-size: 13px; font-weight: 700;
-  font-family: 'Sora', sans-serif;
+  font-family: Arial, sans-serif;
   background: linear-gradient(180deg, #1e6e3a 0%, #154f29 100%);
   color: #fff; border: none; border-radius: var(--radius-sm);
   cursor: pointer; transition: all 0.18s;

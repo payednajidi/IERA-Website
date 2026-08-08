@@ -1,5 +1,5 @@
 <script setup>
-import { onMounted, ref } from 'vue'
+import { onMounted, ref, computed } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import api from '../services/api'
 import { markStepCompleted, setCurrentAssessmentId } from '../services/eraProgress'
@@ -13,6 +13,21 @@ const saving = ref(false)
 const tasks = ref([])
 const rows = ref([])
 const taskNotApplicable = ref({})
+
+const computeSpans = (items, keyFn) => {
+  const spans = new Array(items.length).fill(0)
+  let i = 0
+  while (i < items.length) {
+    const val = keyFn(items[i])
+    let j = i + 1
+    while (j < items.length && keyFn(items[j]) === val) j++
+    spans[i] = j - i
+    i = j
+  }
+  return spans
+}
+
+const rowSpans = computed(() => computeSpans(rows.value, r => r.body_part))
 
 const rowTemplate = [
   {
@@ -44,6 +59,12 @@ const rowTemplate = [
     body_part: 'Neck, shoulders, elbows, wrists, hands, knee',
     physical_risk_factor: 'Work using the knee as a hammer more than once per minute',
     max_exposure_duration: 'More than 2 hours per day',
+  },
+  {
+    key: 'other_repetition',
+    body_part: 'Other',
+    physical_risk_factor: '',
+    max_exposure_duration: '',
   },
 ]
 
@@ -232,7 +253,10 @@ onMounted(() => {
           </thead>
           <tbody>
             <tr v-for="(row, rowIndex) in rows" :key="row.key">
-              <td>{{ row.body_part }}</td>
+              <td
+                v-if="rowSpans[rowIndex] > 0"
+                :rowspan="rowSpans[rowIndex] > 1 ? rowSpans[rowIndex] : undefined"
+              >{{ row.body_part }}</td>
               <td>{{ row.physical_risk_factor }}</td>
               <td>{{ row.max_exposure_duration }}</td>
               <template v-for="task in tasks" :key="`row-${row.key}-${task.id}`">
@@ -282,7 +306,7 @@ onMounted(() => {
 
 <style scoped>
 .loading-state { padding: 40px; text-align: center; }
-.page-wrapper { font-family: DM Sans, Arial, sans-serif; display: flex; flex-direction: column; gap: 16px; }
+.page-wrapper { font-family: Arial, sans-serif; display: flex; flex-direction: column; gap: 16px; }
 .page-hero { display: flex; align-items: flex-start; justify-content: space-between; gap: 20px; padding: 22px 24px; background: linear-gradient(135deg, #0b1a2a 0%, #17324f 58%, #224f7a 100%); border-radius: 10px; }
 .hero-left { display: flex; flex-direction: column; gap: 6px; }
 .hero-tag { width: fit-content; padding: 4px 10px; border-radius: 999px; font-size: 11px; font-weight: 700; letter-spacing: 0.05em; color: #e8a020; background: rgba(232,160,32,0.25); border: 1px solid rgba(232,160,32,0.55); text-transform: uppercase; }
@@ -317,7 +341,7 @@ onMounted(() => {
   border: 1.5px solid transparent;
   font-size: 14px;
   font-weight: 700;
-  font-family: 'Sora', 'DM Sans', Arial, sans-serif;
+  font-family: Arial, sans-serif;
   letter-spacing: 0.02em;
   cursor: pointer;
   transition: all 0.2s;

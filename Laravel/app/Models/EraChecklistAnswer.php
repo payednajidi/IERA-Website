@@ -14,6 +14,7 @@ class EraChecklistAnswer extends Model
         'task_id',
         'checklist_item_id',
         'answer',
+        'remarks',
     ];
 
     public function assessment()
