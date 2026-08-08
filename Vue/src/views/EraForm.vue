@@ -124,22 +124,37 @@ const rebuildPhotoGroups = () => {
 }
 
 watch(processes, () => { rebuildPhotoGroups() }, { deep: true })
+
+const applyBossTransfer = (bossData) => {
+  assessorName.value = bossData.name || ''
+  department.value = bossData.department || ''
+  if (bossData.process) processes.value[0].name = bossData.process
+  if (bossData.jobTask && processes.value[0]?.tasks?.length > 0) {
+    processes.value[0].tasks[0].title = bossData.jobTask
+  }
+  bossAutoFilled.value = true
+  bossFilled.value = bossData
+}
+
 onMounted(() => {
   rebuildPhotoGroups()
 
   const fromBoss = consumeBossToEraRedirect()
   if (fromBoss) {
     const bossData = getBossEraTransfer()
-    if (bossData) {
-      assessorName.value = bossData.name || ''
-      department.value = bossData.department || ''
-      if (bossData.process) processes.value[0].name = bossData.process
-      if (bossData.jobTask && processes.value[0]?.tasks?.length > 0) {
-        processes.value[0].tasks[0].title = bossData.jobTask
-      }
-      bossAutoFilled.value = true
-      bossFilled.value = bossData
-    }
+    if (bossData) applyBossTransfer(bossData)
+    return
+  }
+
+  const isFormEmpty =
+    !assessorName.value.trim() &&
+    !department.value.trim() &&
+    !(processes.value[0]?.name || '').trim() &&
+    !(processes.value[0]?.tasks?.[0]?.title || '').trim()
+
+  if (isFormEmpty && getBossQuestionnaireId()) {
+    const bossData = getBossEraTransfer()
+    if (bossData) applyBossTransfer(bossData)
   }
 })
 
